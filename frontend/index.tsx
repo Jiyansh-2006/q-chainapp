@@ -3,7 +3,6 @@ import ReactDOM from 'react-dom/client';
 import App from './App';
 import { WalletProvider } from './contexts/WalletContext';
 import { AlgorandWalletProvider } from './contexts/AlgorandWalletContext';
-import './index.css';
 
 const rootElement = document.getElementById('root');
 if (!rootElement) {
