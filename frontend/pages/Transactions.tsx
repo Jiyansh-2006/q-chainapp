@@ -3,7 +3,11 @@ import React, { useState, useEffect } from 'react';
 import Card from '../components/Card';
 import LoadingSpinner from '../components/LoadingSpinner';
 import { useWallet } from '../hooks/useWallet';
+import { useAlgorandWallet } from '../hooks/useAlgorandWallet';
+import { useAlgorandData } from '../hooks/useAlgorandData';
 import { transactionMonitor } from '../services/transactionMonitor';
+import { algorandService } from '../services/algorandService';
+import { algorandWallet } from '../services/algorandWallet';
 
 // Enhanced interfaces with ZKP support
 interface CryptanalysisMetrics {
@@ -85,7 +89,7 @@ interface Transaction {
   to: string;
   amount: string;
   timestamp: number;
-  status: 'Completed' | 'Pending' | 'Failed' | 'Suspicious';
+  status: 'Completed' | 'Failed' | 'Suspicious';
   isPqc: boolean;
   pqcSignature?: string;
   pqcAlgorithm?: string;
@@ -103,6 +107,30 @@ interface Transaction {
   };
   realTimeAlert?: boolean;
   alertReason?: string;
+  // Algorand specific fields
+  network?: 'ethereum' | 'algorand';
+  algoType?: 'pay' | 'acfg' | 'axfer' | 'unknown';
+  assetId?: number;
+  assetName?: string;
+  note?: string;
+  fee?: number;
+  round?: number;
+}
+
+interface AlgorandTransactionData {
+  id: string;
+  type: string;
+  sender: string;
+  receiver?: string;
+  amount: number;
+  assetId?: number;
+  assetName?: string;
+  timestamp: number;
+  round: number;
+  fee: number;
+  note?: string;
+  confirmed: boolean;
+  explorerUrl: string;
 }
 
 interface RiskStats {
@@ -113,6 +141,46 @@ interface RiskStats {
   max_amount_allowed: number;
   risk_threshold: number;
 }
+
+// Network Tabs Component
+const NetworkTabs: React.FC<{
+  activeTab: 'ethereum' | 'algorand';
+  onTabChange: (tab: 'ethereum' | 'algorand') => void;
+  ethConnected?: boolean;
+  algoConnected?: boolean;
+}> = ({ activeTab, onTabChange, ethConnected, algoConnected }) => {
+  return (
+    <div className="flex gap-4 mb-6">
+      <button
+        onClick={() => onTabChange('ethereum')}
+        className={`flex items-center gap-2 px-6 py-3 rounded-lg font-semibold transition-all ${activeTab === 'ethereum'
+          ? 'bg-gradient-to-r from-purple-600 to-pink-600 text-white shadow-lg shadow-purple-500/20'
+          : 'bg-gray-800 text-gray-400 hover:bg-gray-700'
+          }`}
+      >
+        <span className="text-xl">🟣</span>
+        <span>Ethereum</span>
+        {ethConnected && (
+          <span className="ml-2 w-2 h-2 bg-green-500 rounded-full animate-pulse"></span>
+        )}
+      </button>
+
+      <button
+        onClick={() => onTabChange('algorand')}
+        className={`flex items-center gap-2 px-6 py-3 rounded-lg font-semibold transition-all ${activeTab === 'algorand'
+          ? 'bg-gradient-to-r from-green-600 to-emerald-500 text-white shadow-lg shadow-green-500/20'
+          : 'bg-gray-800 text-gray-400 hover:bg-gray-700'
+          }`}
+      >
+        <span className="text-xl">🟢</span>
+        <span>Algorand</span>
+        {algoConnected && (
+          <span className="ml-2 w-2 h-2 bg-green-500 rounded-full animate-pulse"></span>
+        )}
+      </button>
+    </div>
+  );
+};
 
 // Risk Stats Cards Component
 const RiskStatsCards: React.FC<{ stats: RiskStats }> = ({ stats }) => {
@@ -129,8 +197,8 @@ const RiskStatsCards: React.FC<{ stats: RiskStats }> = ({ stats }) => {
         <h3 className="text-lg font-semibold text-white mb-1">Low Risk</h3>
         <p className="text-sm text-slate-400">Amount ≤ {stats.risk_threshold} QTOK</p>
         <div className="mt-2 text-xs text-green-400/70">
-          {stats.total_transactions > 0 
-            ? ((stats.low_risk_count / stats.total_transactions) * 100).toFixed(1) 
+          {stats.total_transactions > 0
+            ? ((stats.low_risk_count / stats.total_transactions) * 100).toFixed(1)
             : '0'}% of total
         </div>
       </div>
@@ -146,8 +214,8 @@ const RiskStatsCards: React.FC<{ stats: RiskStats }> = ({ stats }) => {
         <h3 className="text-lg font-semibold text-white mb-1">Medium Risk</h3>
         <p className="text-sm text-slate-400">Amount near threshold</p>
         <div className="mt-2 text-xs text-yellow-400/70">
-          {stats.total_transactions > 0 
-            ? ((stats.medium_risk_count / stats.total_transactions) * 100).toFixed(1) 
+          {stats.total_transactions > 0
+            ? ((stats.medium_risk_count / stats.total_transactions) * 100).toFixed(1)
             : '0'}% of total
         </div>
       </div>
@@ -163,8 +231,8 @@ const RiskStatsCards: React.FC<{ stats: RiskStats }> = ({ stats }) => {
         <h3 className="text-lg font-semibold text-white mb-1">High Risk</h3>
         <p className="text-sm text-slate-400">Amount &gt; {stats.risk_threshold} QTOK</p>
         <div className="mt-2 text-xs text-red-400/70">
-          {stats.total_transactions > 0 
-            ? ((stats.high_risk_count / stats.total_transactions) * 100).toFixed(1) 
+          {stats.total_transactions > 0
+            ? ((stats.high_risk_count / stats.total_transactions) * 100).toFixed(1)
             : '0'}% of total
         </div>
       </div>
@@ -375,7 +443,7 @@ const ZKPAttributeBadge: React.FC<{ attribute: ZKPAttribute; onViewFullDetails?:
   );
 };
 
-// Unified Analysis Modal (works for ALL risk levels - Low, Medium, High)
+// Unified Analysis Modal (works for ALL risk levels)
 const UnifiedAnalysisModal: React.FC<{
   isOpen: boolean;
   onClose: () => void;
@@ -388,14 +456,6 @@ const UnifiedAnalysisModal: React.FC<{
 
   const formatAmount = (amount: number) => {
     return amount.toFixed(4);
-  };
-
-  const getFactorColor = (value: number, type: 'positive' | 'negative') => {
-    if (type === 'positive') {
-      return value > 0.7 ? 'text-green-400' : value > 0.4 ? 'text-yellow-400' : 'text-red-400';
-    } else {
-      return value > 0.7 ? 'text-red-400' : value > 0.4 ? 'text-yellow-400' : 'text-green-400';
-    }
   };
 
   const formatAddress = (addr: string) => {
@@ -447,8 +507,8 @@ const UnifiedAnalysisModal: React.FC<{
               <SeverityBadge severity={riskLevel} />
             </div>
             <div>
-              <p className="text-xs text-gray-400">Model Used</p>
-              <p className="text-sm text-white">{analysis.model_used ? 'ML Model' : 'Probabilistic'}</p>
+              <p className="text-xs text-gray-400">Network</p>
+              <p className="text-sm text-white capitalize">{transaction.network || 'Ethereum'}</p>
             </div>
           </div>
         </div>
@@ -461,10 +521,12 @@ const UnifiedAnalysisModal: React.FC<{
               <span className="text-gray-400">From:</span>
               <span className="text-white font-mono">{formatAddress(transaction.from)}</span>
             </div>
-            <div className="flex justify-between">
-              <span className="text-gray-400">To:</span>
-              <span className="text-white font-mono">{formatAddress(transaction.to)}</span>
-            </div>
+            {transaction.to && (
+              <div className="flex justify-between">
+                <span className="text-gray-400">To:</span>
+                <span className="text-white font-mono">{formatAddress(transaction.to)}</span>
+              </div>
+            )}
             <div className="flex justify-between">
               <span className="text-gray-400">Hash:</span>
               <span className="text-purple-400 font-mono text-xs">{transaction.hash.substring(0, 16)}...</span>
@@ -473,30 +535,40 @@ const UnifiedAnalysisModal: React.FC<{
               <span className="text-gray-400">Time:</span>
               <span className="text-white">{new Date(transaction.timestamp).toLocaleString()}</span>
             </div>
+            {transaction.network === 'algorand' && transaction.round && (
+              <div className="flex justify-between">
+                <span className="text-gray-400">Round:</span>
+                <span className="text-white">{transaction.round}</span>
+              </div>
+            )}
+            {transaction.network === 'algorand' && transaction.fee && (
+              <div className="flex justify-between">
+                <span className="text-gray-400">Fee:</span>
+                <span className="text-white">{transaction.fee.toFixed(3)} ALGO</span>
+              </div>
+            )}
           </div>
         </div>
 
-        {/* Risk Factors - Show for ALL risk levels */}
+        {/* Risk Factors */}
         <h3 className="text-lg font-bold text-white mb-4">Risk Factors</h3>
-        
+
         <div className="space-y-4 mb-6">
           {/* Amount Factor */}
           <div className="p-4 bg-gray-900/50 rounded-lg">
             <div className="flex justify-between items-center mb-2">
               <span className="text-sm font-medium text-white">Amount Factor</span>
-              <span className={`text-sm font-bold ${
-                analysis.amount_factor > 0.7 ? 'text-red-400' : 
+              <span className={`text-sm font-bold ${analysis.amount_factor > 0.7 ? 'text-red-400' :
                 analysis.amount_factor > 0.4 ? 'text-yellow-400' : 'text-green-400'
-              }`}>
+                }`}>
                 {(analysis.amount_factor * 100).toFixed(1)}%
               </span>
             </div>
             <div className="w-full bg-gray-700 h-2 rounded-full">
               <div
-                className={`h-2 rounded-full ${
-                  analysis.amount_factor > 0.7 ? 'bg-red-500' : 
+                className={`h-2 rounded-full ${analysis.amount_factor > 0.7 ? 'bg-red-500' :
                   analysis.amount_factor > 0.4 ? 'bg-yellow-500' : 'bg-green-500'
-                }`}
+                  }`}
                 style={{ width: `${analysis.amount_factor * 100}%` }}
               />
             </div>
@@ -512,19 +584,17 @@ const UnifiedAnalysisModal: React.FC<{
             <div className="p-4 bg-gray-900/50 rounded-lg">
               <div className="flex justify-between items-center mb-2">
                 <span className="text-sm font-medium text-white">Transaction Velocity</span>
-                <span className={`text-sm font-bold ${
-                  analysis.velocity_factor > 0.15 ? 'text-red-400' : 
+                <span className={`text-sm font-bold ${analysis.velocity_factor > 0.15 ? 'text-red-400' :
                   analysis.velocity_factor > 0.05 ? 'text-yellow-400' : 'text-green-400'
-                }`}>
+                  }`}>
                   {(analysis.velocity_factor * 100).toFixed(1)}%
                 </span>
               </div>
               <div className="w-full bg-gray-700 h-2 rounded-full">
                 <div
-                  className={`h-2 rounded-full ${
-                    analysis.velocity_factor > 0.15 ? 'bg-red-500' : 
+                  className={`h-2 rounded-full ${analysis.velocity_factor > 0.15 ? 'bg-red-500' :
                     analysis.velocity_factor > 0.05 ? 'bg-yellow-500' : 'bg-green-500'
-                  }`}
+                    }`}
                   style={{ width: `${analysis.velocity_factor * 100}%` }}
                 />
               </div>
@@ -539,19 +609,17 @@ const UnifiedAnalysisModal: React.FC<{
             <div className="p-4 bg-gray-900/50 rounded-lg">
               <div className="flex justify-between items-center mb-2">
                 <span className="text-sm font-medium text-white">Amount Anomaly</span>
-                <span className={`text-sm font-bold ${
-                  analysis.anomaly_factor > 0.15 ? 'text-red-400' : 
+                <span className={`text-sm font-bold ${analysis.anomaly_factor > 0.15 ? 'text-red-400' :
                   analysis.anomaly_factor > 0.05 ? 'text-yellow-400' : 'text-green-400'
-                }`}>
+                  }`}>
                   {(analysis.anomaly_factor * 100).toFixed(1)}%
                 </span>
               </div>
               <div className="w-full bg-gray-700 h-2 rounded-full">
                 <div
-                  className={`h-2 rounded-full ${
-                    analysis.anomaly_factor > 0.15 ? 'bg-red-500' : 
+                  className={`h-2 rounded-full ${analysis.anomaly_factor > 0.15 ? 'bg-red-500' :
                     analysis.anomaly_factor > 0.05 ? 'bg-yellow-500' : 'bg-green-500'
-                  }`}
+                    }`}
                   style={{ width: `${analysis.anomaly_factor * 100}%` }}
                 />
               </div>
@@ -581,13 +649,13 @@ const UnifiedAnalysisModal: React.FC<{
           </div>
         </div>
 
-        {/* Raw Calculation - Show for ALL risk levels */}
+        {/* Raw Calculation */}
         <div className="p-4 bg-gray-900/30 rounded-lg">
           <h4 className="text-sm font-medium text-white mb-2">Calculation Breakdown</h4>
           <div className="space-y-1 text-xs text-gray-400">
             <p>Raw Probability = Amount Factor × Random Factor + Velocity + Anomaly</p>
             <p className="font-mono mt-2 bg-gray-950 p-2 rounded">
-              = ({analysis.amount_factor.toFixed(3)} × {analysis.random_factor.toFixed(3)}) 
+              = ({analysis.amount_factor.toFixed(3)} × {analysis.random_factor.toFixed(3)})
               {analysis.velocity_factor > 0 ? ` + ${analysis.velocity_factor.toFixed(3)}` : ''}
               {analysis.anomaly_factor > 0 ? ` + ${analysis.anomaly_factor.toFixed(3)}` : ''}
             </p>
@@ -600,7 +668,7 @@ const UnifiedAnalysisModal: React.FC<{
           </div>
         </div>
 
-        {/* Cryptanalysis Section - Show for ALL risk levels if available */}
+        {/* Cryptanalysis Section */}
         {cryptanalysis && (
           <div className="mt-6 p-4 bg-purple-500/10 rounded-lg border border-purple-500/30">
             <h3 className="text-lg font-bold text-white mb-3 flex items-center">
@@ -637,7 +705,7 @@ const UnifiedAnalysisModal: React.FC<{
           </div>
         )}
 
-        {/* ZKP Verification Section - Show for ALL risk levels if available */}
+        {/* ZKP Verification Section */}
         {zkpVerification && (
           <div className="mt-4 p-4 bg-blue-500/10 rounded-lg border border-blue-500/30">
             <h3 className="text-lg font-bold text-white mb-3 flex items-center">
@@ -662,7 +730,7 @@ const UnifiedAnalysisModal: React.FC<{
           </div>
         )}
 
-        {/* Reason - Show for ALL risk levels */}
+        {/* Reason */}
         {transaction.fraudReason && (
           <div className={`mt-4 p-3 bg-${riskColor}-500/10 rounded-lg border border-${riskColor}-500/20`}>
             <p className="text-xs text-${riskColor}-400">
@@ -685,858 +753,476 @@ const UnifiedAnalysisModal: React.FC<{
   );
 };
 
-// Cryptanalysis Details Modal (keep for backward compatibility)
-const CryptanalysisModal: React.FC<{
+// Algorand Send Modal with PQC/ZKP
+const AlgorandSendModal: React.FC<{
   isOpen: boolean;
   onClose: () => void;
-  cryptanalysis: CryptanalysisResult;
-  zkpVerification?: ZKPVerification;
-  transaction?: Transaction;
-}> = ({ isOpen, onClose, cryptanalysis, zkpVerification, transaction }) => {
+  account: string;
+  onSuccess: (txId: string, pqcData?: any) => void;
+  onError?: (error: string) => void;
+  quantumStatus?: 'checking' | 'online' | 'offline';
+  quantumWalletId?: string;
+}> = ({ isOpen, onClose, account, onSuccess, onError, quantumStatus = 'offline', quantumWalletId }) => {
+  const [receiver, setReceiver] = useState('');
+  const [amount, setAmount] = useState('');
+  const [note, setNote] = useState('');
+  const [isPqc, setIsPqc] = useState(false);
+  const [enableZKP, setEnableZKP] = useState(true);
+  const [selectedAttributes, setSelectedAttributes] = useState<string[]>(['amount', 'recipient', 'nonce']);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const [cryptanalysis, setCryptanalysis] = useState<CryptanalysisResult | undefined>();
+  const [zkpVerification, setZkpVerification] = useState<ZKPVerification | undefined>();
+  const [showCryptanalysisWarning, setShowCryptanalysisWarning] = useState(false);
+
   if (!isOpen) return null;
 
-  const getRiskColor = (risk: string) => {
-    switch (risk) {
-      case 'high': return 'text-red-400 bg-red-500/10 border-red-500/30';
-      case 'medium': return 'text-yellow-400 bg-yellow-500/10 border-yellow-500/30';
-      case 'low': return 'text-green-400 bg-green-500/10 border-green-500/30';
-      default: return 'text-gray-400 bg-gray-500/10 border-gray-500/30';
+  const handleSend = async () => {
+    if (!receiver.trim()) {
+      setError('Please enter receiver address');
+      return;
+    }
+
+    const amountNum = parseFloat(amount);
+    if (isNaN(amountNum) || amountNum <= 0) {
+      setError('Please enter a valid amount');
+      return;
+    }
+
+    try {
+      setLoading(true);
+      setError('');
+      setCryptanalysis(undefined);
+      setZkpVerification(undefined);
+
+      // Step 1: PQC Signing with ZKP (if enabled)
+      let pqcSignature: string | undefined;
+      let pqcAlgorithm: string | undefined;
+      let cryptanalysisResult: CryptanalysisResult | undefined;
+      let zkpResult: ZKPVerification | undefined;
+
+      if (isPqc && quantumStatus === 'online' && quantumWalletId) {
+        try {
+          const timestamp = new Date().toISOString();
+          const nonce = Date.now();
+
+          const transactionPayload = {
+            amount: amountNum,
+            to: receiver,
+            nonce: nonce,
+            timestamp: timestamp,
+            note: note || undefined
+          };
+
+          const zkpPayload = {
+            enable: enableZKP,
+            attributes: selectedAttributes,
+            circuit_type: "merkle",
+            public_inputs: {
+              amount_gt_zero: amountNum > 0,
+              amount: amountNum,
+              recipient: receiver,
+              nonce: nonce,
+              timestamp: timestamp
+            }
+          };
+
+          const signRequest = {
+            wallet_id: quantumWalletId,
+            algorithm: "pqc",
+            transaction: transactionPayload,
+            zkp: zkpPayload,
+            chain: "algorand"
+          };
+
+          console.log("📤 Sending Algorand PQC request to backend:", signRequest);
+
+          const response = await fetch('https://qchain-quantum-pqc-backend.onrender.com/sign', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Accept': 'application/json'
+            },
+            body: JSON.stringify(signRequest),
+          });
+
+          if (!response.ok) {
+            const errorText = await response.text();
+            let errorDetail;
+            try {
+              errorDetail = JSON.parse(errorText);
+              if (errorDetail.detail || errorDetail.error) {
+                cryptanalysisResult = normalizeCryptanalysis(errorDetail);
+                setCryptanalysis(cryptanalysisResult);
+              }
+            } catch {
+              errorDetail = errorText;
+            }
+
+            if (!cryptanalysisResult) {
+              throw new Error(JSON.stringify(errorDetail));
+            }
+          } else {
+            const signedTx = await response.json();
+
+            pqcSignature = signedTx.signature;
+            pqcAlgorithm = signedTx.algorithm;
+
+            if (signedTx.cryptanalysis) {
+              cryptanalysisResult = normalizeCryptanalysis(signedTx.cryptanalysis);
+              setCryptanalysis(cryptanalysisResult);
+              console.log("📊 Cryptanalysis received for Algorand:", cryptanalysisResult);
+            }
+
+            if (signedTx.zkp_verification) {
+              zkpResult = signedTx.zkp_verification;
+              setZkpVerification(zkpResult);
+              console.log("🛡️ ZKP verification received for Algorand:", zkpResult);
+            }
+          }
+
+          if (cryptanalysisResult) {
+            if (!cryptanalysisResult.secure && cryptanalysisResult.risk === 'high') {
+              const issuesList = cryptanalysisResult.issues && cryptanalysisResult.issues.length > 0
+                ? cryptanalysisResult.issues.join(', ')
+                : 'High risk transaction';
+              setError(`Transaction blocked: ${issuesList}`);
+              if (onError) onError(`Transaction blocked: ${issuesList}`);
+              setLoading(false);
+              return;
+            } else if (!cryptanalysisResult.secure) {
+              const issuesList = cryptanalysisResult.issues && cryptanalysisResult.issues.length > 0
+                ? cryptanalysisResult.issues.join(', ')
+                : 'Security warning';
+              setError(`Security warning: ${issuesList}`);
+              setShowCryptanalysisWarning(true);
+
+              setTimeout(() => {
+                setShowCryptanalysisWarning(false);
+              }, 5000);
+            }
+          }
+
+        } catch (err: any) {
+          console.error("PQC error for Algorand:", err);
+          let errorMessage = "PQC signing failed";
+          try {
+            const parsed = JSON.parse(err.message);
+            if (parsed.detail) {
+              if (typeof parsed.detail === 'string') {
+                errorMessage = parsed.detail;
+              } else if (parsed.detail.error) {
+                errorMessage = parsed.detail.error;
+              }
+            }
+          } catch {
+            errorMessage = err.message || "PQC signing failed";
+          }
+
+          setError(errorMessage + ". Try using standard security.");
+          if (onError) onError(errorMessage);
+          setLoading(false);
+          return;
+        }
+      }
+
+      // Step 2: Send ALGO transaction
+      const params = await algorandService.getSuggestedParams();
+      const txn = await algorandService.createPaymentTransaction(
+        account,
+        receiver,
+        amountNum,
+        note || undefined
+      );
+
+      const signed = await algorandWallet.signTransaction(txn);
+      const response = await algorandService.sendTransaction(signed);
+
+      // Pass PQC data back to parent
+      onSuccess(response.txId, {
+        isPqc,
+        pqcSignature,
+        pqcAlgorithm,
+        cryptanalysis: cryptanalysisResult,
+        zkpVerification: zkpResult,
+        amount: amountNum,
+        to: receiver,
+        note
+      });
+
+      onClose();
+    } catch (err: any) {
+      console.error('Send failed:', err);
+      setError(err.message || 'Transaction failed');
+      if (onError) onError(err.message || 'Transaction failed');
+    } finally {
+      setLoading(false);
     }
   };
 
-  const metrics = cryptanalysis.metrics || {
-    entropy_score: 0,
-    timing_leak_score: 0,
-    pattern_match: 0,
-    signature_strength: 0,
-    nonce_reuse_risk: 0,
-    timestamp_drift: 0
-  };
+  // Normalize cryptanalysis from backend
+  const normalizeCryptanalysis = (raw: any): CryptanalysisResult | undefined => {
+    if (!raw) return undefined;
 
-  return (
-    <div className="fixed inset-0 bg-black/80 flex items-center justify-center p-4 z-50 overflow-y-auto">
-      <div className="bg-gray-800 rounded-xl max-w-4xl w-full p-6 border border-purple-500/30 max-h-[90vh] overflow-y-auto">
-        {/* Header */}
-        <div className="flex items-center justify-between mb-6 sticky top-0 bg-gray-800 pb-4 border-b border-gray-700">
-          <div className="flex items-center">
-            <div className="w-10 h-10 rounded-full bg-purple-500/20 flex items-center justify-center mr-3">
-              <span className="text-purple-400">🔐</span>
-            </div>
-            <div>
-              <h2 className="text-2xl font-bold text-white">Cryptanalysis Report</h2>
-              <p className="text-slate-400 text-sm">Detailed security analysis with ZKP verification</p>
-            </div>
-          </div>
-          <button onClick={onClose} className="text-gray-400 hover:text-white">✕</button>
-        </div>
-
-        {/* Overall Security Status */}
-        <div className={`p-6 rounded-xl mb-6 ${getRiskColor(cryptanalysis.risk || 'low')}`}>
-          <div className="flex items-center justify-between">
-            <div>
-              <div className="flex items-center">
-                <span className="text-2xl mr-2">{cryptanalysis.secure ? '✅' : '❌'}</span>
-                <span className="text-xl font-bold text-white">
-                  {cryptanalysis.secure ? 'Secure Transaction' : 'Security Risks Detected'}
-                </span>
-              </div>
-              <p className="text-slate-300 mt-2">
-                Risk Level: <span className="font-bold uppercase">{cryptanalysis.risk || 'unknown'}</span> |
-                Risk Score: <span className="font-bold">{cryptanalysis.risk_score || 0}%</span>
-              </p>
-            </div>
-            <RiskMeter score={cryptanalysis.risk_score || 0} size="lg" />
-          </div>
-        </div>
-
-        {/* Metrics Grid */}
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 mb-6">
-          <div className="p-4 bg-gray-900/50 rounded-lg border border-gray-700">
-            <div className="text-sm text-gray-400 mb-1">Entropy Score</div>
-            <div className="flex items-center justify-between">
-              <span className="text-2xl font-bold text-white">
-                {(metrics.entropy_score * 100).toFixed(1)}%
-              </span>
-              <span className={`text-xs px-2 py-1 rounded ${metrics.entropy_score > 0.7 ? 'bg-green-500/20 text-green-400' :
-                metrics.entropy_score > 0.4 ? 'bg-yellow-500/20 text-yellow-400' :
-                  'bg-red-500/20 text-red-400'
-                }`}>
-                {metrics.entropy_score > 0.7 ? 'High' :
-                  metrics.entropy_score > 0.4 ? 'Medium' : 'Low'}
-              </span>
-            </div>
-            <div className="w-full bg-gray-700 h-2 rounded-full mt-2">
-              <div
-                className={`h-2 rounded-full ${metrics.entropy_score > 0.7 ? 'bg-green-500' :
-                  metrics.entropy_score > 0.4 ? 'bg-yellow-500' : 'bg-red-500'
-                  }`}
-                style={{ width: `${metrics.entropy_score * 100}%` }}
-              />
-            </div>
-          </div>
-
-          <div className="p-4 bg-gray-900/50 rounded-lg border border-gray-700">
-            <div className="text-sm text-gray-400 mb-1">Signature Strength</div>
-            <div className="flex items-center">
-              <span className="text-lg font-bold text-purple-400">
-                {(metrics.signature_strength * 100).toFixed(1)}%
-              </span>
-            </div>
-            <p className="text-xs text-gray-400 mt-2">
-              Algorithm: {transaction?.pqcAlgorithm || 'Dilithium2'}
-            </p>
-          </div>
-
-          <div className="p-4 bg-gray-900/50 rounded-lg border border-gray-700">
-            <div className="text-sm text-gray-400 mb-1">Nonce Reuse Risk</div>
-            <div className="flex items-center">
-              <span className="text-lg font-bold text-yellow-400">
-                {(metrics.nonce_reuse_risk * 100).toFixed(1)}%
-              </span>
-            </div>
-          </div>
-        </div>
-
-        {/* ZKP Verification Section */}
-        {zkpVerification && (
-          <div className="mb-6 p-6 bg-gradient-to-r from-purple-500/10 to-blue-500/10 rounded-xl border border-purple-500/30">
-            <h3 className="text-lg font-bold text-white mb-4 flex items-center">
-              <span className="mr-2">🛡️</span> Zero-Knowledge Proof Verification
-            </h3>
-
-            <div className="flex items-center justify-between mb-4">
-              <div>
-                <div className="flex items-center">
-                  <span className={`text-lg font-bold ${zkpVerification.verified ? 'text-green-400' : 'text-red-400'}`}>
-                    {zkpVerification.verified ? 'Verified ✓' : 'Verification Failed ✗'}
-                  </span>
-                </div>
-              </div>
-              <div className="text-right">
-                <div className="text-2xl font-bold text-white">{zkpVerification.overall_score}%</div>
-                <div className="text-xs text-gray-400">Overall Score</div>
-              </div>
-            </div>
-
-            <div className="space-y-3">
-              <h4 className="text-sm font-semibold text-gray-300">Verified Attributes:</h4>
-              <div className="grid grid-cols-2 gap-2">
-                {zkpVerification.attributes.map((attr, idx) => (
-                  <ZKPAttributeBadge key={idx} attribute={attr} />
-                ))}
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* Issues */}
-        {cryptanalysis.issues && cryptanalysis.issues.length > 0 && (
-          <div className="mb-6">
-            <h3 className="text-lg font-bold text-white mb-3 flex items-center">
-              <span className="mr-2">⚠️</span> Detected Vulnerabilities
-            </h3>
-            <div className="space-y-2">
-              {cryptanalysis.issues.map((vuln, idx) => (
-                <div key={idx} className="p-3 bg-red-500/10 rounded-lg border border-red-500/20">
-                  <div className="flex items-start">
-                    <span className="text-red-400 mr-2">•</span>
-                    <span className="text-sm text-gray-300">{vuln}</span>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {/* Recommendations */}
-        {cryptanalysis.recommendations && cryptanalysis.recommendations.length > 0 && (
-          <div className="mb-6">
-            <h3 className="text-lg font-bold text-white mb-3 flex items-center">
-              <span className="mr-2">💡</span> Recommendations
-            </h3>
-            <div className="space-y-2">
-              {cryptanalysis.recommendations.map((rec, idx) => (
-                <div key={idx} className="p-3 bg-blue-500/10 rounded-lg border border-blue-500/20">
-                  <div className="flex items-start">
-                    <span className="text-blue-400 mr-2">→</span>
-                    <span className="text-sm text-gray-300">{rec}</span>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-      </div>
-    </div>
-  );
-};
-
-// Enhanced Transaction Card Component
-const TransactionCard: React.FC<{
-  transaction: Transaction;
-  index: number;
-  onViewDetails: () => void;
-  onDelete: (hash: string) => void;
-}> = ({ transaction, index, onViewDetails, onDelete }) => {
-  const [expanded, setExpanded] = useState(false);
-  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
-
-  const getRiskLevel = () => {
-    if (transaction.fraudSeverity === 'High' || (transaction.cryptanalysis && transaction.cryptanalysis.risk === 'high')) {
-      return 'High';
+    if (raw.error || raw.detail) {
+      const errorData = raw.detail || raw;
+      return {
+        secure: false,
+        risk: errorData.risk || 'high',
+        risk_score: errorData.risk_score || 75,
+        issues: errorData.issues || ['Transaction rejected by security analysis'],
+        metrics: {
+          entropy_score: errorData.metrics?.entropy ?? errorData.metrics?.entropy_score ?? 0.5,
+          timing_leak_score: errorData.metrics?.timing_leak_score ?? 0.5,
+          pattern_match: errorData.metrics?.pattern_match ?? 0.5,
+          signature_strength: errorData.metrics?.signature_strength ?? 0.5,
+          nonce_reuse_risk: errorData.metrics?.nonce_reuse_risk ?? 0.5,
+          timestamp_drift: errorData.metrics?.timestamp_drift ?? 10
+        },
+        recommendations: errorData.recommendations || ['Review transaction details'],
+        timestamp_analysis: {
+          expected_delay: 100,
+          actual_delay: 120,
+          variance: 20,
+          is_suspicious: (errorData.metrics?.timing_leak_score ?? 0) > 0.4
+        }
+      };
     }
-    if (transaction.fraudSeverity === 'Medium' || (transaction.cryptanalysis?.risk === 'medium')) {
-      return 'Medium';
-    }
-    return 'Low';
-  };
 
-  const riskLevel = getRiskLevel();
-  const riskScore = transaction.fraudScore || transaction.cryptanalysis?.risk_score || 0;
-  const entropyScore = transaction.cryptanalysis?.metrics?.entropy_score ?? 0.5;
-  const entropyScorePercent = (entropyScore * 100).toFixed(1);
-
-  const getStatusIcon = (status: string) => {
-    switch (status) {
-      case 'Completed': return '✅';
-      case 'Pending': return '⏳';
-      case 'Failed': return '❌';
-      case 'Suspicious': return '⚠️';
-      default: return '📄';
-    }
-  };
-
-  const getRiskGradient = (risk: string) => {
-    switch (risk) {
-      case 'High': return 'from-red-600/20 via-red-500/10 to-orange-600/20 border-red-500/30';
-      case 'Medium': return 'from-yellow-600/20 via-yellow-500/10 to-amber-600/20 border-yellow-500/30';
-      case 'Low': return 'from-green-600/20 via-green-500/10 to-emerald-600/20 border-green-500/30';
-      default: return 'from-gray-600/20 via-gray-500/10 to-slate-600/20 border-gray-500/30';
-    }
-  };
-
-  const getRiskBadgeColor = (risk: string) => {
-    switch (risk) {
-      case 'High': return 'bg-red-500/20 text-red-400 border-red-500/30';
-      case 'Medium': return 'bg-yellow-500/20 text-yellow-400 border-yellow-500/30';
-      case 'Low': return 'bg-green-500/20 text-green-400 border-green-500/30';
-      default: return 'bg-gray-500/20 text-gray-400 border-gray-500/30';
-    }
-  };
-
-  const formatAddress = (addr: string) => {
-    if (!addr) return '';
-    return `${addr.substring(0, 6)}...${addr.substring(addr.length - 4)}`;
-  };
-
-  const formatDateTime = (timestamp: number) => {
-    const date = new Date(timestamp);
     return {
-      date: date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
-      time: date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
-    };
-  };
-
-  const { date, time } = formatDateTime(transaction.timestamp);
-
-  const handleDelete = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    setShowDeleteConfirm(true);
-  };
-
-  const confirmDelete = () => {
-    onDelete(transaction.hash);
-    setShowDeleteConfirm(false);
-  };
-
-  return (
-    <div
-      className={`relative overflow-hidden rounded-2xl border transition-all duration-300 hover:shadow-2xl hover:scale-[1.02] ${
-        expanded ? 'shadow-2xl scale-[1.02]' : 'shadow-lg'
-      } bg-gradient-to-br ${getRiskGradient(riskLevel)} backdrop-blur-sm`}
-    >
-      {/* Animated background pattern */}
-      <div className="absolute inset-0 opacity-5">
-        <div className="absolute inset-0" style={{
-          backgroundImage: 'radial-gradient(circle at 2px 2px, currentColor 1px, transparent 0)',
-          backgroundSize: '24px 24px'
-        }} />
-      </div>
-
-      {/* Glowing border effect on hover */}
-      <div className={`absolute inset-0 rounded-2xl transition-opacity duration-300 opacity-0 hover:opacity-100 pointer-events-none ${
-        riskLevel === 'High' ? 'shadow-[0_0_30px_rgba(239,68,68,0.3)]' :
-        riskLevel === 'Medium' ? 'shadow-[0_0_30px_rgba(234,179,8,0.3)]' :
-        'shadow-[0_0_30px_rgba(34,197,94,0.3)]'
-      }`} />
-
-      <div className="relative p-6">
-        {/* Header Section */}
-        <div className="flex items-start justify-between mb-4">
-          <div className="flex items-center space-x-4">
-            {/* Status Icon with animated glow */}
-            <div className={`relative w-12 h-12 rounded-2xl flex items-center justify-center text-xl ${
-              riskLevel === 'High' ? 'bg-red-500/20 text-red-400' :
-              riskLevel === 'Medium' ? 'bg-yellow-500/20 text-yellow-400' :
-              'bg-green-500/20 text-green-400'
-            }`}>
-              <div className={`absolute inset-0 rounded-2xl animate-ping opacity-20 ${
-                riskLevel === 'High' ? 'bg-red-400' :
-                riskLevel === 'Medium' ? 'bg-yellow-400' :
-                'bg-green-400'
-              }`} />
-              <span className="relative">{getStatusIcon(transaction.status)}</span>
-            </div>
-
-            <div>
-              <div className="flex items-center space-x-3 mb-1">
-                <span className="text-sm font-medium text-gray-400">TX #{index + 1}</span>
-                <span className={`px-3 py-1 rounded-full text-xs font-medium border ${getRiskBadgeColor(riskLevel)}`}>
-                  {riskLevel} Risk ({riskScore}%)
-                </span>
-                {transaction.isPqc && (
-                  <span className="px-3 py-1 bg-gradient-to-r from-purple-500/20 to-blue-500/20 text-purple-400 rounded-full text-xs font-medium border border-purple-500/30 flex items-center">
-                    <span className="mr-1">🔐</span>
-                    PQC
-                  </span>
-                )}
-                {transaction.zkpVerification?.verified && (
-                  <span className="px-3 py-1 bg-gradient-to-r from-blue-500/20 to-cyan-500/20 text-blue-400 rounded-full text-xs font-medium border border-blue-500/30 flex items-center animate-pulse">
-                    <span className="mr-1">🛡️</span>
-                    ZKP
-                  </span>
-                )}
-                {transaction.realTimeAlert && (
-                  <span className="px-3 py-1 bg-red-500/20 text-red-400 rounded-full text-xs font-medium border border-red-500/30 animate-pulse flex items-center">
-                    <span className="mr-1">🚨</span>
-                    ALERT
-                  </span>
-                )}
-              </div>
-
-              <div className="flex items-center space-x-4 text-xs text-gray-400">
-                <span className="flex items-center">
-                  <span className="mr-1">📅</span>
-                  {date}
-                </span>
-                <span className="flex items-center">
-                  <span className="mr-1">⏰</span>
-                  {time}
-                </span>
-                {transaction.pqcAlgorithm && (
-                  <span className="flex items-center text-purple-400">
-                    <span className="mr-1">⚙️</span>
-                    {transaction.pqcAlgorithm}
-                  </span>
-                )}
-              </div>
-            </div>
-          </div>
-
-          <div className="flex items-center space-x-2">
-            {/* Delete Button */}
-            <button
-              onClick={handleDelete}
-              className="p-2 hover:bg-red-500/20 rounded-xl transition-all duration-200 group"
-              title="Delete transaction"
-            >
-              <svg
-                className="w-5 h-5 text-gray-400 group-hover:text-red-400 transition-colors"
-                fill="none"
-                stroke="currentColor"
-                viewBox="0 0 24 24"
-              >
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-              </svg>
-            </button>
-
-            {/* Expand/Collapse Button */}
-            <button
-              onClick={() => setExpanded(!expanded)}
-              className="p-2 hover:bg-white/10 rounded-xl transition-all duration-200 group"
-            >
-              <svg
-                className={`w-5 h-5 text-gray-400 transform transition-transform duration-300 group-hover:text-white ${
-                  expanded ? 'rotate-180' : ''
-                }`}
-                fill="none"
-                stroke="currentColor"
-                viewBox="0 0 24 24"
-              >
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7" />
-              </svg>
-            </button>
-          </div>
-        </div>
-
-        {/* Transaction Details Grid */}
-        <div className="grid grid-cols-3 gap-4 mb-4">
-          <div className="col-span-1">
-            <div className="p-4 bg-gray-900/50 rounded-xl border border-gray-700/50 backdrop-blur-sm">
-              <div className="text-xs text-gray-400 mb-1 flex items-center">
-                <span className="mr-1">💰</span>
-                Amount
-              </div>
-              <div className="text-xl font-bold text-white">{transaction.amount}</div>
-            </div>
-          </div>
-
-          <div className="col-span-2">
-            <div className="p-4 bg-gray-900/50 rounded-xl border border-gray-700/50 backdrop-blur-sm">
-              <div className="text-xs text-gray-400 mb-1 flex items-center">
-                <span className="mr-1">📬</span>
-                Recipient
-              </div>
-              <div className="flex items-center justify-between">
-                <div className="text-sm font-mono text-white truncate flex-1" title={transaction.to}>
-                  {formatAddress(transaction.to)}
-                </div>
-                <button
-                  onClick={() => navigator.clipboard.writeText(transaction.to)}
-                  className="ml-2 p-1.5 bg-gray-800 hover:bg-gray-700 rounded-lg transition-colors"
-                  title="Copy address"
-                >
-                  <svg className="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 002 2h2a2 2 0 002-2M8 5a2 2 0 012-2h2a2 2 0 012 2m0 0h2a2 2 0 012 2v3m2 4H10m0 0l3-3m-3 3l3 3" />
-                  </svg>
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        {/* Security Metrics */}
-        {transaction.cryptanalysis && (
-          <div className="grid grid-cols-4 gap-3 mb-4">
-            <div className="p-3 bg-gray-900/30 rounded-xl">
-              <div className="text-xs text-gray-400 mb-1">Entropy</div>
-              <div className="flex items-center space-x-2">
-                <div className="flex-1 h-2 bg-gray-700 rounded-full overflow-hidden">
-                  <div
-                    className={`h-full rounded-full transition-all duration-500 ${
-                      entropyScore > 0.7 ? 'bg-green-500' :
-                      entropyScore > 0.4 ? 'bg-yellow-500' : 'bg-red-500'
-                    }`}
-                    style={{ width: `${entropyScore * 100}%` }}
-                  />
-                </div>
-                <span className="text-xs font-medium text-white min-w-[45px]">{entropyScorePercent}%</span>
-              </div>
-            </div>
-
-            <div className="p-3 bg-gray-900/30 rounded-xl">
-              <div className="text-xs text-gray-400 mb-1">Risk Score</div>
-              <div className="flex items-center justify-between">
-                <span className={`text-sm font-bold ${
-                  riskScore < 30 ? 'text-green-400' :
-                  riskScore < 60 ? 'text-yellow-400' : 'text-red-400'
-                }`}>
-                  {riskScore}%
-                </span>
-                <RiskMeter score={riskScore} size="sm" />
-              </div>
-            </div>
-
-            <div className="p-3 bg-gray-900/30 rounded-xl">
-              <div className="text-xs text-gray-400 mb-1">Issues</div>
-              <div className="text-sm font-bold text-white">{transaction.cryptanalysis.issues?.length || 0}</div>
-            </div>
-
-            <div className="p-3 bg-gray-900/30 rounded-xl">
-              <div className="text-xs text-gray-400 mb-1">Security</div>
-              <div className={`text-sm font-bold ${
-                transaction.cryptanalysis.secure ? 'text-green-400' : 'text-red-400'
-              }`}>
-                {transaction.cryptanalysis.secure ? 'Secure' : 'Risky'}
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* ZKP Attributes Section */}
-        {transaction.zkpVerification && transaction.zkpVerification.attributes.length > 0 && (
-          <div className="mb-4 p-4 bg-gradient-to-r from-blue-500/5 via-purple-500/5 to-pink-500/5 rounded-xl border border-blue-500/20">
-            <div className="flex items-center justify-between mb-3">
-              <h4 className="text-sm font-semibold text-blue-400 flex items-center">
-                <span className="mr-2">🛡️</span>
-                ZKP Verified Attributes
-                <span className="ml-2 px-2 py-0.5 bg-blue-500/20 text-blue-400 rounded-full text-xs">
-                  {transaction.zkpVerification.attributes.length} verified
-                </span>
-              </h4>
-              <div className="flex items-center space-x-2">
-                <span className="text-xs text-gray-400">Overall Score:</span>
-                <span className="text-sm font-bold text-white">{transaction.zkpVerification.overall_score}%</span>
-              </div>
-            </div>
-
-            <div className="grid grid-cols-2 gap-2">
-              {transaction.zkpVerification.attributes.map((attr, idx) => (
-                <ZKPAttributeBadge
-                  key={idx}
-                  attribute={attr}
-                />
-              ))}
-            </div>
-
-            {transaction.zkpVerification.circuit && (
-              <div className="mt-3 flex items-center space-x-4 text-xs text-gray-400 border-t border-blue-500/20 pt-3">
-                <span>Circuit: <span className="text-purple-400">{transaction.zkpVerification.circuit.name}</span></span>
-                <span>Constraints: <span className="text-white">{transaction.zkpVerification.circuit.constraints.toLocaleString()}</span></span>
-                <span>Proving Time: <span className="text-white">{transaction.zkpVerification.circuit.proving_time_ms}ms</span></span>
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* Risk Score Bar (always visible) */}
-        <div className="mb-4">
-          <div className="flex justify-between text-xs mb-1">
-            <span className="text-gray-400">Risk Score</span>
-            <span className={`font-medium ${
-              riskScore < 30 ? 'text-green-400' :
-              riskScore < 60 ? 'text-yellow-400' :
-              'text-red-400'
-            }`}>{riskScore}%</span>
-          </div>
-          <div className="w-full bg-gray-700 h-2 rounded-full overflow-hidden">
-            <div
-              className={`h-2 rounded-full ${
-                riskScore < 30 ? 'bg-green-500' :
-                riskScore < 60 ? 'bg-yellow-500' :
-                'bg-red-500'
-              }`}
-              style={{ width: `${riskScore}%` }}
-            />
-          </div>
-        </div>
-
-        {/* Reason */}
-        {transaction.fraudReason && (
-          <p className="text-sm text-slate-300 mb-4">{transaction.fraudReason}</p>
-        )}
-
-        {/* Expanded Content */}
-        {expanded && (
-          <div className="mt-4 pt-4 border-t border-gray-700/50 space-y-4 animate-fadeIn">
-            {/* Issues Section */}
-            {transaction.cryptanalysis && transaction.cryptanalysis.issues && transaction.cryptanalysis.issues.length > 0 && (
-              <div className="p-4 bg-red-500/10 rounded-xl border border-red-500/20">
-                <h4 className="text-sm font-semibold text-red-400 mb-2 flex items-center">
-                  <span className="mr-2">⚠️</span>
-                  Detected Issues ({transaction.cryptanalysis.issues.length})
-                </h4>
-                <div className="space-y-2">
-                  {transaction.cryptanalysis.issues.map((issue, idx) => (
-                    <div key={idx} className="flex items-start text-sm">
-                      <span className="text-red-400 mr-2 mt-0.5">•</span>
-                      <span className="text-gray-300">{issue}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {/* Fraud Analysis Details */}
-            {transaction.fraudAnalysis && (
-              <div className="p-4 bg-gray-900/30 rounded-xl">
-                <h4 className="text-sm font-semibold text-white mb-3">Risk Factor Breakdown</h4>
-                <div className="space-y-3">
-                  <div>
-                    <div className="flex justify-between text-xs mb-1">
-                      <span className="text-gray-400">Amount Factor</span>
-                      <span className="text-white">
-                        {(transaction.fraudAnalysis.amount_factor * 100).toFixed(1)}%
-                      </span>
-                    </div>
-                    <div className="w-full bg-gray-700 h-1.5 rounded-full">
-                      <div
-                        className="h-1.5 rounded-full bg-blue-500"
-                        style={{ width: `${transaction.fraudAnalysis.amount_factor * 100}%` }}
-                      />
-                    </div>
-                  </div>
-
-                  {transaction.fraudAnalysis.velocity_factor > 0 && (
-                    <div>
-                      <div className="flex justify-between text-xs mb-1">
-                        <span className="text-gray-400">Velocity Factor</span>
-                        <span className="text-white">
-                          {(transaction.fraudAnalysis.velocity_factor * 100).toFixed(1)}%
-                        </span>
-                      </div>
-                      <div className="w-full bg-gray-700 h-1.5 rounded-full">
-                        <div
-                          className="h-1.5 rounded-full bg-yellow-500"
-                          style={{ width: `${transaction.fraudAnalysis.velocity_factor * 100}%` }}
-                        />
-                      </div>
-                    </div>
-                  )}
-
-                  {transaction.fraudAnalysis.anomaly_factor > 0 && (
-                    <div>
-                      <div className="flex justify-between text-xs mb-1">
-                        <span className="text-gray-400">Anomaly Factor</span>
-                        <span className="text-white">
-                          {(transaction.fraudAnalysis.anomaly_factor * 100).toFixed(1)}%
-                        </span>
-                      </div>
-                      <div className="w-full bg-gray-700 h-1.5 rounded-full">
-                        <div
-                          className="h-1.5 rounded-full bg-red-500"
-                          style={{ width: `${transaction.fraudAnalysis.anomaly_factor * 100}%` }}
-                        />
-                      </div>
-                    </div>
-                  )}
-
-                  <div>
-                    <div className="flex justify-between text-xs mb-1">
-                      <span className="text-gray-400">Random Variation</span>
-                      <span className="text-white">
-                        {(transaction.fraudAnalysis.random_factor * 100).toFixed(1)}%
-                      </span>
-                    </div>
-                    <div className="w-full bg-gray-700 h-1.5 rounded-full">
-                      <div
-                        className="h-1.5 rounded-full bg-purple-500"
-                        style={{ width: `${transaction.fraudAnalysis.random_factor * 100}%` }}
-                      />
-                    </div>
-                  </div>
-                </div>
-
-                {transaction.fraudAnalysis.model_used && transaction.fraudAnalysis.model_probability && (
-                  <p className="text-xs text-green-400 mt-3">
-                    ✓ ML Model: {(transaction.fraudAnalysis.model_probability * 100).toFixed(1)}%
-                  </p>
-                )}
-              </div>
-            )}
-
-            {/* Transaction Hash */}
-            <div className="p-4 bg-gray-900/30 rounded-xl">
-              <div className="text-xs text-gray-400 mb-2 flex items-center">
-                <span className="mr-1">🔗</span>
-                Transaction Hash
-              </div>
-              <div className="flex items-center justify-between">
-                <div className="text-xs font-mono text-purple-400 break-all flex-1">
-                  {transaction.hash}
-                </div>
-                <button
-                  onClick={() => navigator.clipboard.writeText(transaction.hash)}
-                  className="ml-2 p-2 bg-gray-800 hover:bg-gray-700 rounded-lg transition-colors"
-                  title="Copy hash"
-                >
-                  <svg className="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
-                  </svg>
-                </button>
-              </div>
-            </div>
-
-            {/* Action Buttons */}
-            <div className="flex space-x-3">
-              <button
-                onClick={() => {
-                  console.log('📊 View Full Analysis clicked for transaction:', transaction);
-                  onViewDetails();
-                }}
-                className="flex-1 py-3 bg-gradient-to-r from-purple-600 to-blue-600 text-white rounded-xl text-sm font-medium hover:from-purple-700 hover:to-blue-700 transition-all transform hover:scale-[1.02] shadow-lg shadow-purple-500/20"
-              >
-                📊 View Full Analysis
-              </button>
-
-              {transaction.explorerUrl && (
-                <a
-                  href={transaction.explorerUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="flex-1 py-3 bg-gray-800 text-gray-300 rounded-xl text-sm font-medium hover:bg-gray-700 transition-all transform hover:scale-[1.02] border border-gray-700 flex items-center justify-center"
-                >
-                  <span className="mr-2">🔍</span>
-                  View on Explorer
-                </a>
-              )}
-            </div>
-          </div>
-        )}
-
-        {/* Status Progress Bar */}
-        <div className="absolute bottom-0 left-0 right-0 h-1.5 overflow-hidden bg-gray-900/50">
-          <div
-            className={`h-full transition-all duration-1000 ${
-              transaction.status === 'Completed' ? 'w-full bg-green-500' :
-              transaction.status === 'Pending' ? 'w-2/3 bg-yellow-500 animate-pulse' :
-              transaction.status === 'Failed' ? 'w-full bg-red-500' :
-              'w-full bg-orange-500'
-            }`}
-            style={{
-              boxShadow: transaction.status === 'Pending' ? '0 0 10px rgba(234,179,8,0.5)' : 'none'
-            }}
-          />
-        </div>
-      </div>
-
-      {/* Delete Confirmation Modal */}
-      {showDeleteConfirm && (
-        <div className="absolute inset-0 bg-black/90 rounded-2xl flex items-center justify-center p-4 z-10">
-          <div className="bg-gray-800 rounded-xl p-6 max-w-sm w-full border border-red-500/30">
-            <h3 className="text-xl font-bold text-white mb-2">Delete Transaction</h3>
-            <p className="text-slate-300 text-sm mb-4">
-              Are you sure you want to delete this transaction? This action cannot be undone.
-            </p>
-            <div className="flex gap-3">
-              <button
-                onClick={() => setShowDeleteConfirm(false)}
-                className="flex-1 py-2 bg-gray-700 text-white rounded-lg hover:bg-gray-600 transition-colors"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={confirmDelete}
-                className="flex-1 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors"
-              >
-                Delete
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-};
-
-// Normalize cryptanalysis from backend
-const normalizeCryptanalysis = (raw: any): CryptanalysisResult | undefined => {
-  if (!raw) return undefined;
-
-  if (raw.error || raw.detail) {
-    const errorData = raw.detail || raw;
-    return {
-      secure: false,
-      risk: errorData.risk || 'high',
-      risk_score: errorData.risk_score || 75,
-      issues: errorData.issues || ['Transaction rejected by security analysis'],
-      metrics: {
-        entropy_score: errorData.metrics?.entropy ?? errorData.metrics?.entropy_score ?? 0.5,
-        timing_leak_score: errorData.metrics?.timing_leak_score ?? 0.5,
-        pattern_match: errorData.metrics?.pattern_match ?? 0.5,
-        signature_strength: errorData.metrics?.signature_strength ?? 0.5,
-        nonce_reuse_risk: errorData.metrics?.nonce_reuse_risk ?? 0.5,
-        timestamp_drift: errorData.metrics?.timestamp_drift ?? 10
+      secure: raw.secure ?? true,
+      risk: raw.risk || (raw.risk_score > 60 ? 'high' : raw.risk_score > 30 ? 'medium' : 'low'),
+      risk_score: raw.risk_score || 0,
+      issues: raw.issues || [],
+      metrics: raw.metrics || {
+        entropy_score: raw.entropy_score ?? 1,
+        timing_leak_score: raw.timing_leak_score ?? 0,
+        pattern_match: raw.pattern_match ?? 0,
+        signature_strength: raw.signature_strength ?? 1,
+        nonce_reuse_risk: raw.nonce_reuse_risk ?? 0,
+        timestamp_drift: raw.timestamp_drift ?? 0
       },
-      recommendations: errorData.recommendations || ['Review transaction details'],
-      timestamp_analysis: {
-        expected_delay: 100,
-        actual_delay: 120,
-        variance: 20,
-        is_suspicious: (errorData.metrics?.timing_leak_score ?? 0) > 0.4
+      recommendations: raw.recommendations || [],
+      timestamp_analysis: raw.timestamp_analysis || {
+        expected_delay: 0,
+        actual_delay: 0,
+        variance: 0,
+        is_suspicious: (raw.metrics?.timing_leak_score ?? 0) > 0.4
       }
     };
-  }
-
-  return {
-    secure: raw.secure ?? true,
-    risk: raw.risk || (raw.risk_score > 60 ? 'high' : raw.risk_score > 30 ? 'medium' : 'low'),
-    risk_score: raw.risk_score || 0,
-    issues: raw.issues || [],
-    metrics: raw.metrics || {
-      entropy_score: raw.entropy_score ?? 1,
-      timing_leak_score: raw.timing_leak_score ?? 0,
-      pattern_match: raw.pattern_match ?? 0,
-      signature_strength: raw.signature_strength ?? 1,
-      nonce_reuse_risk: raw.nonce_reuse_risk ?? 0,
-      timestamp_drift: raw.timestamp_drift ?? 0
-    },
-    recommendations: raw.recommendations || [],
-    timestamp_analysis: raw.timestamp_analysis || {
-      expected_delay: 0,
-      actual_delay: 0,
-      variance: 0,
-      is_suspicious: (raw.metrics?.timing_leak_score ?? 0) > 0.4
-    }
   };
+
+  return (
+    <div className="fixed inset-0 bg-black/80 flex items-center justify-center p-4 z-50">
+      <div className="bg-gray-800 rounded-xl max-w-md w-full p-6 border border-green-500/30 max-h-[90vh] overflow-y-auto">
+        <h2 className="text-2xl font-bold text-white mb-4">Send ALGO</h2>
+
+        {error && (
+          <div className="mb-4 p-3 bg-red-500/10 border border-red-500/30 rounded-lg text-red-400 text-sm">
+            {error}
+          </div>
+        )}
+
+        {showCryptanalysisWarning && (
+          <div className="mb-4 p-3 bg-yellow-500/10 border border-yellow-500/30 rounded-lg text-yellow-400 text-sm">
+            ⚠️ Security warning detected. Check transaction details.
+          </div>
+        )}
+
+        <div className="space-y-4">
+          <div>
+            <label className="block text-sm font-medium text-gray-400 mb-2">
+              Receiver Address
+            </label>
+            <input
+              type="text"
+              value={receiver}
+              onChange={(e) => setReceiver(e.target.value)}
+              placeholder="ALGO address..."
+              className="w-full px-4 py-3 bg-gray-900/50 border border-gray-700 rounded-lg text-white focus:ring-2 focus:ring-green-500 focus:border-transparent"
+              disabled={loading}
+            />
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-400 mb-2">
+              Amount (ALGO)
+            </label>
+            <input
+              type="number"
+              value={amount}
+              onChange={(e) => setAmount(e.target.value)}
+              placeholder="0.0"
+              step="0.001"
+              min="0"
+              className="w-full px-4 py-3 bg-gray-900/50 border border-gray-700 rounded-lg text-white focus:ring-2 focus:ring-green-500 focus:border-transparent"
+              disabled={loading}
+            />
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-400 mb-2">
+              Note (optional)
+            </label>
+            <input
+              type="text"
+              value={note}
+              onChange={(e) => setNote(e.target.value)}
+              placeholder="Transaction note..."
+              className="w-full px-4 py-3 bg-gray-900/50 border border-gray-700 rounded-lg text-white focus:ring-2 focus:ring-green-500 focus:border-transparent"
+              disabled={loading}
+            />
+          </div>
+
+          {/* Quantum Security Toggle for Algorand */}
+          <div className={`p-4 rounded-xl border transition-all ${isPqc
+            ? 'bg-gradient-to-r from-purple-500/10 to-blue-500/10 border-purple-500/30'
+            : 'bg-gray-800/30 border-gray-700'}`}>
+            <div className="flex items-center justify-between">
+              <div>
+                <div className="flex items-center">
+                  <span className="text-sm font-medium text-slate-300">Quantum Security</span>
+                  {isPqc && (
+                    <span className="ml-2 text-xs px-2 py-1 bg-gradient-to-r from-purple-500/20 to-blue-500/20 text-purple-400 rounded border border-purple-500/30">
+                      🔐 PQC
+                    </span>
+                  )}
+                </div>
+                <p className="text-xs text-slate-400 mt-1">Dilithium2 Post-Quantum Signatures for Algorand</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  if (!isPqc && quantumStatus !== 'online') {
+                    setError('PQC service is offline. Please check if the quantum service is running.');
+                    return;
+                  }
+                  setIsPqc(!isPqc);
+                }}
+                disabled={loading || (quantumStatus !== 'online' && !isPqc)}
+                className={`relative inline-flex h-7 w-14 items-center rounded-full transition-all ${isPqc ? 'bg-gradient-to-r from-purple-500 to-blue-500' : 'bg-gray-700'} disabled:opacity-50`}
+              >
+                <span className={`inline-block h-5 w-5 transform rounded-full bg-white transition-transform ${isPqc ? 'translate-x-8' : 'translate-x-1'}`} />
+              </button>
+            </div>
+            {quantumStatus !== 'online' && isPqc && (
+              <p className="text-xs text-yellow-400 mt-2">
+                ⚠️ PQC service is offline. Please check if the quantum service is running.
+              </p>
+            )}
+            {quantumStatus === 'online' && isPqc && (
+              <p className="text-xs text-green-400 mt-2">
+                ✅ Dilithium2 signatures with cryptanalysis for Algorand
+              </p>
+            )}
+          </div>
+
+          {/* ZKP Toggle for Algorand */}
+          {isPqc && quantumStatus === 'online' && (
+            <div className="p-4 bg-gradient-to-r from-purple-500/10 to-blue-500/10 rounded-lg border border-purple-500/30">
+              <div className="flex items-center justify-between mb-3">
+                <div>
+                  <h4 className="font-semibold text-white">Zero-Knowledge Proofs</h4>
+                  <p className="text-xs text-gray-400">Verify Algorand transaction attributes without revealing them</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setEnableZKP(!enableZKP)}
+                  className={`relative inline-flex h-6 w-11 items-center rounded-full ${enableZKP ? 'bg-purple-500' : 'bg-gray-700'}`}
+                >
+                  <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${enableZKP ? 'translate-x-6' : 'translate-x-1'}`} />
+                </button>
+              </div>
+
+              {enableZKP && (
+                <div className="space-y-2">
+                  <label className="block text-xs text-gray-400">Select additional attributes to prove:</label>
+                  <div className="flex flex-wrap gap-2">
+                    {['amount', 'recipient', 'nonce', 'timestamp'].map((attr) => (
+                      <button
+                        key={attr}
+                        type="button"
+                        onClick={() => {
+                          setSelectedAttributes(prev =>
+                            prev.includes(attr)
+                              ? prev.filter(a => a !== attr)
+                              : [...prev, attr]
+                          );
+                        }}
+                        className={`px-3 py-1 text-xs rounded-full border transition-all ${selectedAttributes.includes(attr)
+                          ? 'bg-purple-500/20 border-purple-500/50 text-purple-400'
+                          : 'bg-gray-800 border-gray-700 text-gray-400 hover:border-gray-600'
+                          }`}
+                      >
+                        {attr}
+                        {selectedAttributes.includes(attr) && ' ✓'}
+                      </button>
+                    ))}
+                  </div>
+                  <p className="text-xs text-green-400 mt-2">
+                    ⚡ amount_gt_zero is always included (required for security)
+                  </p>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Cryptanalysis Results */}
+          {cryptanalysis && (
+            <div className={`p-3 rounded-lg ${cryptanalysis.secure ? 'bg-green-500/10 border-green-500/30' : 'bg-yellow-500/10 border-yellow-500/30'
+              } border`}>
+              <p className="text-xs font-medium text-white">PQC Analysis</p>
+              <p className="text-xs text-gray-400 mt-1">
+                Risk Score: {cryptanalysis.risk_score}% | Issues: {cryptanalysis.issues.length}
+              </p>
+            </div>
+          )}
+
+          {/* ZKP Results */}
+          {zkpVerification && (
+            <div className={`p-3 rounded-lg ${zkpVerification.verified ? 'bg-green-500/10 border-green-500/30' : 'bg-red-500/10 border-red-500/30'
+              } border`}>
+              <p className="text-xs font-medium text-white">ZKP Verification</p>
+              <p className="text-xs text-gray-400 mt-1">
+                {zkpVerification.verified ? '✅ Verified' : '❌ Failed'} | Score: {zkpVerification.overall_score}%
+              </p>
+            </div>
+          )}
+
+          <div className="flex gap-3 pt-4">
+            <button
+              onClick={onClose}
+              className="flex-1 py-3 bg-gray-700 text-white rounded-lg hover:bg-gray-600 transition-colors"
+              disabled={loading}
+            >
+              Cancel
+            </button>
+            <button
+              onClick={handleSend}
+              disabled={loading}
+              className="flex-1 py-3 bg-gradient-to-r from-green-600 to-emerald-500 text-white rounded-lg hover:opacity-90 disabled:opacity-50 transition-all flex items-center justify-center"
+            >
+              {loading ? (
+                <>
+                  <LoadingSpinner size="sm" className="mr-2" />
+                  Sending...
+                </>
+              ) : (
+                'Send'
+              )}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
 };
 
-// Calculate probabilistic risk (PRECISE FORMULA for ALL risk levels)
-const calculateProbabilisticRisk = (amount: number, senderTxCount: number = 0): AnalysisDetails => {
-  // Sigmoid function centered at 4 for smooth transition
-  // Formula: 1 / (1 + e^(-0.8*(x - 4)))
-  // This gives:
-  // amount 1-2 QTOK → ~10-20% risk (Low)
-  // amount 3 QTOK → ~30% risk (Low-Medium)
-  // amount 4 QTOK → ~50% risk (Medium)
-  // amount 5 QTOK → ~70% risk (Medium-High)
-  // amount 6 QTOK → ~90% risk (High)
-  const amount_factor = 1 / (1 + Math.exp(-0.8 * (amount - 4)));
-  
-  // Random factor between 0.9 and 1.1 (±10% variation)
-  const random_factor = 0.9 + (Math.random() * 0.2);
-  
-  // Velocity factor (more transactions = slightly higher risk)
-  const velocity_factor = Math.min(0.2, (senderTxCount / 50) * 0.2);
-  
-  // Anomaly factor (if amount is unusually high compared to average)
-  const anomaly_factor = amount > 8 ? 0.2 : amount > 6 ? 0.1 : 0;
-  
-  // Raw probability calculation (capped between 0.05 and 0.98)
-  const raw_probability = Math.min(0.98, Math.max(0.05, 
-    (amount_factor * random_factor) + velocity_factor + anomaly_factor
-  ));
-  
-  return {
-    amount_factor,
-    random_factor,
-    velocity_factor,
-    anomaly_factor,
-    raw_probability,
-    amount,
-    threshold_4: amount > 4,
-    threshold_6: amount > 6,
-    sender_tx_count: senderTxCount,
-    model_used: false
-  };
-};
-
-// Get severity from probability
-const getSeverityFromProbability = (probability: number): 'Low' | 'Medium' | 'High' => {
-  if (probability < 0.3) return 'Low';
-  if (probability < 0.6) return 'Medium';
-  return 'High';
-};
-
-// Get reason from probability and amount
-const getReasonFromRisk = (amount: number, probability: number, analysis: AnalysisDetails): string => {
-  const reasons = [];
-  
-  if (amount > 6) {
-    reasons.push(`Amount ${amount.toFixed(2)} QTOK exceeds maximum limit`);
-  } else if (amount > 4) {
-    reasons.push(`Amount ${amount.toFixed(2)} QTOK exceeds risk threshold`);
-  }
-  
-  if (analysis.velocity_factor > 0.1) {
-    reasons.push(`High transaction frequency (${analysis.sender_tx_count} recent tx)`);
-  }
-  
-  if (analysis.anomaly_factor > 0) {
-    reasons.push('Amount anomaly detected');
-  }
-  
-  if (reasons.length === 0) {
-    if (probability < 0.3) {
-      reasons.push('Transaction appears normal (Low Risk)');
-    } else if (probability < 0.6) {
-      reasons.push('Moderate risk factors detected (Medium Risk)');
-    } else {
-      reasons.push('Multiple suspicious patterns detected (High Risk)');
-    }
-  }
-  
-  return reasons.join(' | ');
+// Format address helper
+const formatAddress = (address: string, startChars: number = 6, endChars: number = 4): string => {
+  if (!address) return '';
+  if (address.length <= startChars + endChars) return address;
+  return `${address.slice(0, startChars)}...${address.slice(-endChars)}`;
 };
 
 const Transactions: React.FC = () => {
@@ -1547,8 +1233,20 @@ const Transactions: React.FC = () => {
     sendQToken,
     signer,
     network,
-    formatAddress
+    formatAddress: formatEthAddress
   } = useWallet();
+
+  const {
+    account: algoAccount,
+    isConnected: isAlgoConnected,
+    connectWallet: connectAlgoWallet
+  } = useAlgorandWallet();
+
+  const [activeTab, setActiveTab] = useState<'ethereum' | 'algorand'>('ethereum');
+  const [algoTransactions, setAlgoTransactions] = useState<Transaction[]>([]);
+  const [algoBalance, setAlgoBalance] = useState<number | null>(null);
+  const [algoLoading, setAlgoLoading] = useState(false);
+  const [showAlgorandSendModal, setShowAlgorandSendModal] = useState(false);
 
   const [toAddress, setToAddress] = useState('');
   const [amount, setAmount] = useState('');
@@ -1598,15 +1296,75 @@ const Transactions: React.FC = () => {
     cryptanalysis?: CryptanalysisResult;
     zkpVerification?: ZKPVerification;
   } | null>(null);
-
-  // Debug - log when selectedAnalysis changes
   useEffect(() => {
-    if (selectedAnalysis) {
-      console.log('✅ Modal opened with analysis:', selectedAnalysis);
-    } else {
-      console.log('❌ Modal closed');
+    const cachedAlgoTxs = localStorage.getItem('algorandTransactions');
+    if (cachedAlgoTxs) {
+      try {
+        setAlgoTransactions(JSON.parse(cachedAlgoTxs));
+      } catch (e) {
+        console.error('Error loading cached Algorand transactions:', e);
+      }
     }
-  }, [selectedAnalysis]);
+  }, []);
+  // Fetch Algorand transactions
+  const fetchAlgorandTransactions = async () => {
+    if (!algoAccount) return;
+
+    setAlgoLoading(true);
+    try {
+      const balance = await algorandService.getBalance(algoAccount);
+      setAlgoBalance(balance);
+      localStorage.setItem('algorandBalance', balance.toString());
+
+      const txs = await algorandService.lookupAccountTransactions(algoAccount, 20);
+
+      const formattedTxs: Transaction[] = txs.map((tx: any) => {
+        const isConfirmed = tx['confirmed-round'] && tx['confirmed-round'] > 0;
+        const txType = tx['tx-type'];
+        let amount = 0;
+        let receiver = '';
+        let assetId = undefined;
+        let assetName = '';
+
+        if (txType === 'pay' && tx['payment-transaction']) {
+          amount = tx['payment-transaction'].amount / 1_000_000;
+          receiver = tx['payment-transaction'].receiver || '';
+        } else if (txType === 'acfg' && tx['asset-config-transaction']) {
+          assetId = tx['created-asset-index'] || tx['asset-index'];
+          assetName = tx['asset-config-transaction'].params?.name || 'Unknown Asset';
+        } else if (txType === 'axfer' && tx['asset-transfer-transaction']) {
+          amount = tx['asset-transfer-transaction'].amount;
+          receiver = tx['asset-transfer-transaction'].receiver || '';
+          assetId = tx['asset-transfer-transaction']['asset-id'];
+        }
+
+        return {
+          hash: tx.id,
+          from: tx.sender,
+          to: receiver || '',
+          amount: amount.toString(),
+          timestamp: tx['round-time'] * 1000,
+          status: isConfirmed ? 'Completed' : 'Failed',
+          isPqc: false,
+          network: 'algorand',
+          algoType: txType,
+          assetId,
+          assetName,
+          fee: tx.fee / 1_000_000,
+          round: tx['confirmed-round'] || 0,
+          note: tx.note ? new TextDecoder().decode(new Uint8Array(tx.note)) : undefined,
+          explorerUrl: `https://lora.algokit.io/testnet/transaction/${tx.id}`
+        } as Transaction;
+      });
+
+      setAlgoTransactions(formattedTxs);
+      localStorage.setItem('algorandTransactions', JSON.stringify(formattedTxs));
+    } catch (err) {
+      console.error('Error fetching Algorand transactions:', err);
+    } finally {
+      setAlgoLoading(false);
+    }
+  };
 
   // Fetch risk stats
   const fetchRiskStats = async () => {
@@ -1654,6 +1412,15 @@ const Transactions: React.FC = () => {
       }
     }
   }, [address]);
+
+  // Fetch Algorand transactions when account connects
+  useEffect(() => {
+    if (algoAccount) {
+      fetchAlgorandTransactions();
+      const interval = setInterval(fetchAlgorandTransactions, 30000);
+      return () => clearInterval(interval);
+    }
+  }, [algoAccount]);
 
   // Initialize quantum wallet ID
   useEffect(() => {
@@ -1811,34 +1578,58 @@ const Transactions: React.FC = () => {
     }
   };
 
-  // PRECISE PROBABILISTIC FRAUD DETECTION (works for ALL amounts)
+  // Get severity from probability
+  const getSeverityFromProbability = (probability: number): 'Low' | 'Medium' | 'High' => {
+    if (probability < 0.3) return 'Low';
+    if (probability < 0.6) return 'Medium';
+    return 'High';
+  };
+
+  // Calculate probabilistic risk
+  const calculateProbabilisticRisk = (amount: number, senderTxCount: number = 0): AnalysisDetails => {
+    const amount_factor = 1 / (1 + Math.exp(-0.8 * (amount - 4)));
+    const random_factor = 0.9 + (Math.random() * 0.2);
+    const velocity_factor = Math.min(0.2, (senderTxCount / 50) * 0.2);
+    const anomaly_factor = amount > 8 ? 0.2 : amount > 6 ? 0.1 : 0;
+    const raw_probability = Math.min(0.98, Math.max(0.05,
+      (amount_factor * random_factor) + velocity_factor + anomaly_factor
+    ));
+
+    return {
+      amount_factor,
+      random_factor,
+      velocity_factor,
+      anomaly_factor,
+      raw_probability,
+      amount,
+      threshold_4: amount > 4,
+      threshold_6: amount > 6,
+      sender_tx_count: senderTxCount,
+      model_used: false
+    };
+  };
+
+  // Check for fraud
   const checkForFraud = async (txData: any): Promise<FraudCheckResult | null> => {
     if (!monitoringEnabled) return null;
-
-    // Skip fraud check for extremely small amounts
     if (txData.amount <= 0.01) return null;
 
     setLoading(prev => ({ ...prev, wsCheck: true }));
 
     try {
-      // Get sender history count
-      const senderTxCount = transactions.filter(tx => 
+      const senderTxCount = transactions.filter(tx =>
         tx.from?.toLowerCase() === address?.toLowerCase()
       ).length;
-      
-      // Calculate probabilistic risk using precise formula
+
       const analysis = calculateProbabilisticRisk(txData.amount, senderTxCount);
       const probability = analysis.raw_probability;
       const severity = getSeverityFromProbability(probability);
       const reason = getReasonFromRisk(txData.amount, probability, analysis);
-      
-      // Fraud is true if probability > 0.5 (50% threshold)
       const fraud = probability > 0.5;
-      
-      // Add small delay to simulate network request
+
       await new Promise(resolve => setTimeout(resolve, 300));
 
-      const result = {
+      return {
         fraud,
         probability,
         severity,
@@ -1848,16 +1639,43 @@ const Transactions: React.FC = () => {
         timestamp: Date.now(),
         analysis_details: analysis
       };
-
-      console.log('📊 Fraud check result:', result);
-      return result;
-
     } catch (error) {
       console.error('Fraud detection error:', error);
       return null;
     } finally {
       setLoading(prev => ({ ...prev, wsCheck: false }));
     }
+  };
+
+  // Get reason from risk
+  const getReasonFromRisk = (amount: number, probability: number, analysis: AnalysisDetails): string => {
+    const reasons = [];
+
+    if (amount > 6) {
+      reasons.push(`Amount ${amount.toFixed(2)} QTOK exceeds maximum limit`);
+    } else if (amount > 4) {
+      reasons.push(`Amount ${amount.toFixed(2)} QTOK exceeds risk threshold`);
+    }
+
+    if (analysis.velocity_factor > 0.1) {
+      reasons.push(`High transaction frequency (${analysis.sender_tx_count} recent tx)`);
+    }
+
+    if (analysis.anomaly_factor > 0) {
+      reasons.push('Amount anomaly detected');
+    }
+
+    if (reasons.length === 0) {
+      if (probability < 0.3) {
+        reasons.push('Transaction appears normal (Low Risk)');
+      } else if (probability < 0.6) {
+        reasons.push('Moderate risk factors detected (Medium Risk)');
+      } else {
+        reasons.push('Multiple suspicious patterns detected (High Risk)');
+      }
+    }
+
+    return reasons.join(' | ');
   };
 
   // Save transaction
@@ -1873,21 +1691,64 @@ const Transactions: React.FC = () => {
     setTransactions(userTxs);
   };
 
+  // Save Algorand transaction
+  // Save Algorand transaction
+  const saveAlgorandTransaction = (txData: any) => {
+    const newTx: Transaction = {
+      hash: txData.txId,
+      from: algoAccount || '',
+      to: txData.to || '',
+      amount: txData.amount ? txData.amount.toString() : '0',
+      timestamp: Date.now(),
+      status: 'Completed',
+      isPqc: txData.isPqc || false,
+      pqcSignature: txData.pqcSignature,
+      pqcAlgorithm: txData.pqcAlgorithm,
+      cryptanalysis: txData.cryptanalysis,
+      zkpVerification: txData.zkpVerification,
+      network: 'algorand',
+      algoType: 'pay',
+      note: txData.note,
+      explorerUrl: `https://lora.algokit.io/testnet/transaction/${txData.txId}`
+    };
+
+    setAlgoTransactions(prev => {
+      const updated = [newTx, ...prev];
+      // Save to localStorage immediately
+      localStorage.setItem('algorandTransactions', JSON.stringify(updated));
+      return updated;
+    });
+
+    // Also update the main storage
+    const saved = localStorage.getItem('algorandTransactions') || '[]';
+    const allTxs = JSON.parse(saved);
+    const updated = [newTx, ...allTxs];
+    localStorage.setItem('algorandTransactions', JSON.stringify(updated));
+  };
+
   // Delete transaction
   const deleteTransaction = (hash: string) => {
-    const saved = localStorage.getItem('qTokenTransactions') || '[]';
-    const allTxs = JSON.parse(saved);
-    const updated = allTxs.filter((tx: Transaction) => tx.hash !== hash);
-    localStorage.setItem('qTokenTransactions', JSON.stringify(updated));
+    if (activeTab === 'ethereum') {
+      const saved = localStorage.getItem('qTokenTransactions') || '[]';
+      const allTxs = JSON.parse(saved);
+      const updated = allTxs.filter((tx: Transaction) => tx.hash !== hash);
+      localStorage.setItem('qTokenTransactions', JSON.stringify(updated));
 
-    const userTxs = updated
-      .filter((t: Transaction) => t.from?.toLowerCase() === address?.toLowerCase())
-      .sort((a: Transaction, b: Transaction) => b.timestamp - a.timestamp);
-    setTransactions(userTxs);
-    
-    // Also remove from alerts if present
-    setRealTimeAlerts(prev => prev.filter(tx => tx.hash !== hash));
-    
+      const userTxs = updated
+        .filter((t: Transaction) => t.from?.toLowerCase() === address?.toLowerCase())
+        .sort((a: Transaction, b: Transaction) => b.timestamp - a.timestamp);
+      setTransactions(userTxs);
+
+      setRealTimeAlerts(prev => prev.filter(tx => tx.hash !== hash));
+    } else {
+      // Delete from Algorand transactions
+      setAlgoTransactions(prev => {
+        const updated = prev.filter(tx => tx.hash !== hash);
+        localStorage.setItem('algorandTransactions', JSON.stringify(updated));
+        return updated;
+      });
+    }
+
     setSuccess('Transaction deleted successfully');
     setTimeout(() => setSuccess(''), 3000);
     fetchRiskStats();
@@ -1895,13 +1756,24 @@ const Transactions: React.FC = () => {
 
   // Clear all transactions
   const clearAllTransactions = () => {
-    if (window.confirm('Are you sure you want to delete ALL transactions? This cannot be undone.')) {
-      localStorage.removeItem('qTokenTransactions');
-      setTransactions([]);
-      setRealTimeAlerts([]);
-      setSuccess('All transactions cleared');
-      setTimeout(() => setSuccess(''), 3000);
-      fetchRiskStats();
+    if (activeTab === 'ethereum') {
+      if (window.confirm('Are you sure you want to delete ALL Ethereum transactions? This cannot be undone.')) {
+        const saved = localStorage.getItem('qTokenTransactions') || '[]';
+        const allTxs = JSON.parse(saved);
+        const filtered = allTxs.filter((tx: Transaction) => tx.from?.toLowerCase() !== address?.toLowerCase());
+        localStorage.setItem('qTokenTransactions', JSON.stringify(filtered));
+        setTransactions([]);
+        setSuccess('All Ethereum transactions cleared');
+        setTimeout(() => setSuccess(''), 3000);
+        fetchRiskStats();
+      }
+    } else {
+      if (window.confirm('Are you sure you want to delete ALL Algorand transactions? This cannot be undone.')) {
+        setAlgoTransactions([]);
+        localStorage.removeItem('algorandTransactions');
+        setSuccess('All Algorand transactions cleared');
+        setTimeout(() => setSuccess(''), 3000);
+      }
     }
   };
 
@@ -1937,7 +1809,6 @@ const Transactions: React.FC = () => {
       return;
     }
 
-    // Enforce 6 QTOK limit
     if (amountNum > 6) {
       setError(`Maximum transaction limit is 6 QTOK. Please enter a smaller amount.`);
       return;
@@ -1972,7 +1843,6 @@ const Transactions: React.FC = () => {
         if (fraudResult) {
           setFraudCheck(fraudResult);
 
-          // Show warning for high probability ( > 50% )
           if (fraudResult.fraud && fraudResult.probability > 0.5) {
             setShowFraudWarning(true);
             setPendingTransaction(txData);
@@ -2063,22 +1933,21 @@ const Transactions: React.FC = () => {
             }
           }
 
-          // Check cryptanalysis results - only block high risk
           if (cryptanalysis) {
             if (!cryptanalysis.secure && cryptanalysis.risk === 'high') {
-              const issuesList = cryptanalysis.issues && cryptanalysis.issues.length > 0 
-                ? cryptanalysis.issues.join(', ') 
+              const issuesList = cryptanalysis.issues && cryptanalysis.issues.length > 0
+                ? cryptanalysis.issues.join(', ')
                 : 'High risk transaction';
               setError(`Transaction blocked: ${issuesList}`);
               setLoading(prev => ({ ...prev, mint: false }));
               return;
             } else if (!cryptanalysis.secure) {
-              const issuesList = cryptanalysis.issues && cryptanalysis.issues.length > 0 
-                ? cryptanalysis.issues.join(', ') 
+              const issuesList = cryptanalysis.issues && cryptanalysis.issues.length > 0
+                ? cryptanalysis.issues.join(', ')
                 : 'Security warning';
               setCryptanalysisWarningMessage(`Security warning: ${issuesList}`);
               setShowCryptanalysisWarning(true);
-              
+
               setTimeout(() => {
                 setShowCryptanalysisWarning(false);
               }, 5000);
@@ -2155,7 +2024,7 @@ const Transactions: React.FC = () => {
           to: toAddress,
           amount: `${amount} QTOK`,
           timestamp: Date.now(),
-          status: pqcData?.cryptanalysis?.secure === false ? 'Suspicious' : 'Pending',
+          status: pqcData?.cryptanalysis?.secure === false ? 'Suspicious' : 'Completed',
           isPqc,
           pqcSignature: pqcData?.pqcSignature,
           pqcAlgorithm: pqcData?.pqcAlgorithm,
@@ -2191,21 +2060,6 @@ const Transactions: React.FC = () => {
         setPendingTransaction(null);
 
         await refreshBalance();
-
-        setTimeout(() => {
-          const saved = localStorage.getItem('qTokenTransactions') || '[]';
-          const allTxs = JSON.parse(saved);
-          const updated = allTxs.map((tx: Transaction) =>
-            tx.hash === result.hash ? { ...tx, status: 'Completed' } : tx
-          );
-          localStorage.setItem('qTokenTransactions', JSON.stringify(updated));
-
-          const userTxs = updated
-            .filter((t: Transaction) => t.from?.toLowerCase() === address?.toLowerCase())
-            .sort((a: Transaction, b: Transaction) => b.timestamp - a.timestamp);
-          setTransactions(userTxs);
-          fetchRiskStats();
-        }, 5000);
 
       } else {
         setError('Transaction failed: No transaction hash returned');
@@ -2250,7 +2104,115 @@ const Transactions: React.FC = () => {
     }
   };
 
-  // Format helpers
+  // Normalize cryptanalysis from backend
+  const normalizeCryptanalysis = (raw: any): CryptanalysisResult | undefined => {
+    if (!raw) return undefined;
+
+    if (raw.error || raw.detail) {
+      const errorData = raw.detail || raw;
+      return {
+        secure: false,
+        risk: errorData.risk || 'high',
+        risk_score: errorData.risk_score || 75,
+        issues: errorData.issues || ['Transaction rejected by security analysis'],
+        metrics: {
+          entropy_score: errorData.metrics?.entropy ?? errorData.metrics?.entropy_score ?? 0.5,
+          timing_leak_score: errorData.metrics?.timing_leak_score ?? 0.5,
+          pattern_match: errorData.metrics?.pattern_match ?? 0.5,
+          signature_strength: errorData.metrics?.signature_strength ?? 0.5,
+          nonce_reuse_risk: errorData.metrics?.nonce_reuse_risk ?? 0.5,
+          timestamp_drift: errorData.metrics?.timestamp_drift ?? 10
+        },
+        recommendations: errorData.recommendations || ['Review transaction details'],
+        timestamp_analysis: {
+          expected_delay: 100,
+          actual_delay: 120,
+          variance: 20,
+          is_suspicious: (errorData.metrics?.timing_leak_score ?? 0) > 0.4
+        }
+      };
+    }
+
+    return {
+      secure: raw.secure ?? true,
+      risk: raw.risk || (raw.risk_score > 60 ? 'high' : raw.risk_score > 30 ? 'medium' : 'low'),
+      risk_score: raw.risk_score || 0,
+      issues: raw.issues || [],
+      metrics: raw.metrics || {
+        entropy_score: raw.entropy_score ?? 1,
+        timing_leak_score: raw.timing_leak_score ?? 0,
+        pattern_match: raw.pattern_match ?? 0,
+        signature_strength: raw.signature_strength ?? 1,
+        nonce_reuse_risk: raw.nonce_reuse_risk ?? 0,
+        timestamp_drift: raw.timestamp_drift ?? 0
+      },
+      recommendations: raw.recommendations || [],
+      timestamp_analysis: raw.timestamp_analysis || {
+        expected_delay: 0,
+        actual_delay: 0,
+        variance: 0,
+        is_suspicious: (raw.metrics?.timing_leak_score ?? 0) > 0.4
+      }
+    };
+  };
+
+  // Handle Algorand send success
+  const handleAlgoSendSuccess = (txId: string, pqcData?: any) => {
+    setSuccess(`✅ ALGO sent! Transaction ID: ${txId}`);
+
+    // Save the transaction with PQC data if available
+    if (pqcData) {
+      saveAlgorandTransaction({
+        txId,
+        ...pqcData
+      });
+    } else {
+      // Fetch transactions to update list
+      fetchAlgorandTransactions();
+    }
+
+    setTimeout(() => setSuccess(''), 5000);
+  };
+
+  // Handle Algorand send error
+  const handleAlgoSendError = (error: string) => {
+    setError(error);
+  };
+
+  // View analysis details
+  const viewAnalysisDetails = (tx: Transaction) => {
+    console.log('📊 Viewing analysis for transaction:', tx);
+
+    let analysis = tx.fraudAnalysis;
+    if (!analysis && tx.network === 'ethereum') {
+      const amountNum = parseFloat(tx.amount);
+      analysis = calculateProbabilisticRisk(amountNum, 0);
+    } else if (!analysis) {
+      // For Algorand, create a simple analysis
+      const amountNum = parseFloat(tx.amount);
+      analysis = {
+        amount_factor: 0.5,
+        random_factor: 1.0,
+        velocity_factor: 0,
+        anomaly_factor: 0,
+        raw_probability: 0.1,
+        amount: amountNum,
+        threshold_4: false,
+        threshold_6: false,
+        sender_tx_count: 0,
+        model_used: false
+      };
+    }
+
+    setSelectedAnalysis({
+      transaction: tx,
+      analysis: analysis,
+      cryptanalysis: tx.cryptanalysis,
+      zkpVerification: tx.zkpVerification
+    });
+  };
+
+  // Format time
   const formatTime = (timestamp: number) => {
     const date = new Date(timestamp);
     return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
@@ -2261,25 +2223,6 @@ const Transactions: React.FC = () => {
     setRealTimeAlerts([]);
   };
 
-  // View analysis details - uses UnifiedAnalysisModal for ALL risk levels
-  const viewAnalysisDetails = (tx: Transaction) => {
-    console.log('📊 Viewing analysis for transaction:', tx);
-    
-    // Create analysis from fraudAnalysis or calculate from amount
-    let analysis = tx.fraudAnalysis;
-    if (!analysis) {
-      const amountNum = parseFloat(tx.amount);
-      analysis = calculateProbabilisticRisk(amountNum, 0);
-    }
-    
-    setSelectedAnalysis({
-      transaction: tx,
-      analysis: analysis,
-      cryptanalysis: tx.cryptanalysis,
-      zkpVerification: tx.zkpVerification
-    });
-  };
-
   // WebSocket connection badge
   const WebSocketStatusBadge = () => {
     return wsConnection.isConnected ? (
@@ -2288,10 +2231,7 @@ const Transactions: React.FC = () => {
         Real-time
       </span>
     ) : (
-      <span className="text-xs px-2 py-1 bg-yellow-500/20 text-yellow-400 rounded">
-        <span className="w-2 h-2 bg-yellow-500 rounded-full mr-1"></span>
-        Offline
-      </span>
+      <span className=""></span>
     );
   };
 
@@ -2318,6 +2258,17 @@ const Transactions: React.FC = () => {
     );
   };
 
+  // Get current transactions based on active tab
+  const getCurrentTransactions = () => {
+    if (activeTab === 'ethereum') {
+      return transactions;
+    } else {
+      return algoTransactions;
+    }
+  };
+
+  const currentTransactions = getCurrentTransactions();
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-900 to-black text-white p-4 md:p-8">
       <div className="max-w-7xl mx-auto">
@@ -2328,38 +2279,64 @@ const Transactions: React.FC = () => {
           </h1>
           <p className="text-slate-400">Send QTokens with quantum security & AI fraud detection</p>
 
+          {/* Network Tabs */}
+          <NetworkTabs
+            activeTab={activeTab}
+            onTabChange={setActiveTab}
+            ethConnected={!!address}
+            algoConnected={isAlgoConnected}
+          />
+
           {/* Status Bar */}
           <div className="mt-4 flex flex-wrap items-center gap-4">
-            {address ? (
-              <div className="flex items-center gap-2 bg-gray-800/50 px-4 py-2 rounded-lg border border-gray-700">
-                <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
-                <span className="text-sm font-mono">{formatAddress(address)}</span>
-                <span className="text-xs px-2 py-1 bg-blue-500/20 text-blue-400 rounded">
-                  {network?.name || 'Unknown'}
-                </span>
-                <QuantumStatusBadge />
-              </div>
+            {activeTab === 'ethereum' ? (
+              address ? (
+                <div className="flex items-center gap-2 bg-gray-800/50 px-4 py-2 rounded-lg border border-gray-700">
+                  <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
+                  <span className="text-sm font-mono">{formatEthAddress(address)}</span>
+                  <span className="text-xs px-2 py-1 bg-blue-500/20 text-blue-400 rounded">
+                    {network?.name || 'Unknown'}
+                  </span>
+                  <QuantumStatusBadge />
+                  <WebSocketStatusBadge />
+                </div>
+              ) : (
+                <div className="text-yellow-400">⚠️ Connect MetaMask to send QTokens</div>
+              )
             ) : (
-              <button
-                onClick={async () => {
-                  try {
-                    setLoading(prev => ({ ...prev, wallet: true }));
-                  } finally {
-                    setLoading(prev => ({ ...prev, wallet: false }));
-                  }
-                }}
-                disabled={loading.wallet}
-                className="px-6 py-2 bg-gradient-to-r from-blue-600 to-cyan-500 rounded-lg hover:opacity-90 disabled:opacity-50 transition-all"
-              >
-                {loading.wallet ? 'Connecting...' : 'Connect Wallet'}
-              </button>
+              isAlgoConnected ? (
+                <div className="flex items-center gap-2 bg-gray-800/50 px-4 py-2 rounded-lg border border-green-500/30">
+                  <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
+                  <span className="text-sm font-mono">{formatAddress(algoAccount || '')}</span>
+                  <span className="text-xs px-2 py-1 bg-green-500/20 text-green-400 rounded">
+                    {algoBalance?.toFixed(4) || '0'} ALGO
+                  </span>
+                  <span className="text-xs px-2 py-1 bg-green-500/20 text-green-400 rounded">
+                    TestNet
+                  </span>
+                </div>
+              ) : (
+                <div className="flex items-center gap-2">
+                  <div className="text-yellow-400">⚠️ Connect Pera Wallet to send ALGO</div>
+                  <button
+                    onClick={connectAlgoWallet}
+                    className="px-4 py-2 bg-green-600 text-white text-sm rounded-lg hover:bg-green-700 transition-colors"
+                  >
+                    Connect Pera Wallet
+                  </button>
+                </div>
+              )
             )}
 
             <div className="text-sm text-slate-300">
-              Balance: <span className="font-semibold text-white">{parseFloat(qTokenBalance).toFixed(4)} QTOK</span>
+              {activeTab === 'ethereum' ? (
+                <>Balance: <span className="font-semibold text-white">{parseFloat(qTokenBalance).toFixed(4)} QTOK</span></>
+              ) : (
+                <>Balance: <span className="font-semibold text-white">{algoBalance?.toFixed(4) || '0'} ALGO</span></>
+              )}
             </div>
 
-            {realTimeAlerts.length > 0 && (
+            {realTimeAlerts.length > 0 && activeTab === 'ethereum' && (
               <button
                 onClick={() => setShowAlerts(!showAlerts)}
                 className="relative px-4 py-2 bg-gradient-to-r from-red-600 to-orange-500 text-white text-sm rounded-lg hover:opacity-90 transition-all"
@@ -2370,7 +2347,7 @@ const Transactions: React.FC = () => {
             )}
 
             {/* Clear History Button */}
-            {transactions.length > 0 && (
+            {currentTransactions.length > 0 && (
               <button
                 onClick={clearAllTransactions}
                 className="px-4 py-2 bg-red-600/20 text-red-400 text-sm rounded-lg hover:bg-red-600/30 transition-colors flex items-center gap-2"
@@ -2378,17 +2355,17 @@ const Transactions: React.FC = () => {
                 <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
                 </svg>
-                Clear History
+                Clear {activeTab === 'ethereum' ? 'History' : 'View'}
               </button>
             )}
           </div>
         </div>
 
-        {/* Risk Stats Cards */}
-        <RiskStatsCards stats={riskStats} />
+        {/* Risk Stats Cards - Only show for Ethereum */}
+        {activeTab === 'ethereum' && <RiskStatsCards stats={riskStats} />}
 
         {/* Cryptanalysis Warning */}
-        {showCryptanalysisWarning && (
+        {showCryptanalysisWarning && activeTab === 'ethereum' && (
           <div className="mb-6 p-4 bg-yellow-500/10 border border-yellow-500/20 rounded-lg">
             <div className="flex items-center justify-between">
               <div className="flex items-center">
@@ -2410,8 +2387,8 @@ const Transactions: React.FC = () => {
           </div>
         )}
 
-        {/* Real-time Alerts Panel */}
-        {showAlerts && realTimeAlerts.length > 0 && (
+        {/* Real-time Alerts Panel - Only for Ethereum */}
+        {showAlerts && realTimeAlerts.length > 0 && activeTab === 'ethereum' && (
           <Card title="🚨 Real-time Alerts" className="mb-6 border-red-500/30 bg-red-500/5">
             <div className="space-y-3">
               {realTimeAlerts.map((alert, index) => (
@@ -2433,7 +2410,6 @@ const Transactions: React.FC = () => {
                     <button
                       onClick={() => {
                         setRealTimeAlerts(prev => prev.filter((_, i) => i !== index));
-                        // Also delete from localStorage
                         const saved = localStorage.getItem('qTokenTransactions') || '[]';
                         const allTxs = JSON.parse(saved);
                         const updated = allTxs.filter((tx: Transaction) => tx.hash !== alert.hash);
@@ -2498,244 +2474,290 @@ const Transactions: React.FC = () => {
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
           {/* Left: Send Form */}
           <div className="lg:col-span-1 space-y-6">
-            <Card title="Send QTokens" subtitle="Secure transactions with quantum cryptography">
-              <form onSubmit={handleSend} className="space-y-6">
-                {/* Fraud Detection Toggle */}
-                <div className="flex items-center justify-between p-4 bg-gray-800/30 rounded-xl border border-gray-700">
-                  <div className="flex items-center">
-                    <div className={`w-3 h-3 rounded-full mr-3 ${monitoringEnabled ? 'bg-green-500 animate-pulse' : 'bg-slate-500'}`}></div>
-                    <div>
-                      <span className="text-sm font-medium text-slate-300">AI Fraud Detection</span>
-                      <p className="text-xs text-slate-400">
-                        {monitoringEnabled ? 'Real-time monitoring active' : 'Monitoring disabled'}
-                        {monitoringEnabled && !wsConnection.isConnected && (
-                          <span className="text-yellow-400"> (WebSocket offline, using HTTP)</span>
-                        )}
-                      </p>
-                    </div>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => setMonitoringEnabled(!monitoringEnabled)}
-                    disabled={loading.mint || loading.fraud || loading.wsCheck}
-                    className={`relative inline-flex h-6 w-11 items-center rounded-full ${monitoringEnabled ? 'bg-green-500' : 'bg-gray-700'} disabled:opacity-50`}
-                  >
-                    <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${monitoringEnabled ? 'translate-x-6' : 'translate-x-1'}`} />
-                  </button>
-                </div>
-
-                {/* Recipient Address */}
-                <div>
-                  <label className="block text-sm font-medium text-slate-300 mb-2">Recipient Address</label>
-                  <input
-                    type="text"
-                    value={toAddress}
-                    onChange={(e) => setToAddress(e.target.value)}
-                    placeholder="0x..."
-                    className="w-full px-4 py-3 bg-gray-900/50 border border-gray-700 rounded-lg text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all"
-                    disabled={loading.mint || loading.fraud || loading.wsCheck}
-                  />
-                </div>
-
-                {/* Amount */}
-                <div>
-                  <label className="block text-sm font-medium text-slate-300 mb-2">Amount (Max 6 QTOK)</label>
-                  <input
-                    type="number"
-                    value={amount}
-                    onChange={(e) => setAmount(e.target.value)}
-                    placeholder="0.0"
-                    step="0.01"
-                    min="0"
-                    max="6"
-                    className="w-full px-4 py-3 bg-gray-900/50 border border-gray-700 rounded-lg text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all"
-                    disabled={loading.mint || loading.fraud || loading.wsCheck}
-                  />
-                  <div className="flex justify-between mt-2">
-                    <p className="text-xs text-slate-400">Available: {parseFloat(qTokenBalance).toFixed(4)} QTOK</p>
-                    <button
-                      type="button"
-                      onClick={() => setAmount(Math.min(6, parseFloat(qTokenBalance)).toString())}
-                      className="text-xs text-blue-400 hover:text-blue-300 disabled:opacity-50"
-                      disabled={loading.mint || loading.fraud || loading.wsCheck}
-                    >
-                      Use Max (6)
-                    </button>
-                  </div>
-                  {parseFloat(amount) > 4 && (
-                    <p className="text-xs text-yellow-400 mt-1">
-                      ⚠️ Amount exceeds risk threshold ({riskStats.risk_threshold} QTOK)
-                    </p>
-                  )}
-                </div>
-
-                {/* Quantum Security Toggle */}
-                <div className={`p-4 rounded-xl border transition-all ${isPqc
-                  ? 'bg-gradient-to-r from-purple-500/10 to-blue-500/10 border-purple-500/30'
-                  : 'bg-gray-800/30 border-gray-700'}`}>
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <div className="flex items-center">
-                        <span className="text-sm font-medium text-slate-300">Quantum Security</span>
-                        {isPqc && (
-                          <span className="ml-2 text-xs px-2 py-1 bg-gradient-to-r from-purple-500/20 to-blue-500/20 text-purple-400 rounded border border-purple-500/30">
-                            🔐 PQC
-                          </span>
-                        )}
-                      </div>
-                      <p className="text-xs text-slate-400 mt-1">Dilithium2 Post-Quantum Signatures</p>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        if (!isPqc && quantumStatus !== 'online') {
-                          setError('PQC service is offline. Please check if the quantum service is running.');
-                          return;
-                        }
-                        setIsPqc(!isPqc);
-                      }}
-                      disabled={loading.mint || loading.fraud || loading.wsCheck || (quantumStatus !== 'online' && !isPqc)}
-                      className={`relative inline-flex h-7 w-14 items-center rounded-full transition-all ${isPqc ? 'bg-gradient-to-r from-purple-500 to-blue-500' : 'bg-gray-700'} disabled:opacity-50`}
-                    >
-                      <span className={`inline-block h-5 w-5 transform rounded-full bg-white transition-transform ${isPqc ? 'translate-x-8' : 'translate-x-1'}`} />
-                    </button>
-                  </div>
-                  {quantumStatus !== 'online' && isPqc && (
-                    <p className="text-xs text-yellow-400 mt-2">
-                      ⚠️ PQC service is offline. Please check if the quantum service is running on port 8002.
-                    </p>
-                  )}
-                  {quantumStatus === 'online' && isPqc && (
-                    <p className="text-xs text-green-400 mt-2">
-                      ✅ Dilithium2 signatures with cryptanalysis
-                    </p>
-                  )}
-                  {!isPqc && quantumStatus === 'online' && (
-                    <p className="text-xs text-purple-400 mt-2">
-                      💡 Click to enable PQC security
-                    </p>
-                  )}
-                </div>
-
-                {/* ZKP Toggle */}
-                {isPqc && quantumStatus === 'online' && (
-                  <div className="p-4 bg-gradient-to-r from-purple-500/10 to-blue-500/10 rounded-lg border border-purple-500/30">
-                    <div className="flex items-center justify-between mb-3">
+            {activeTab === 'ethereum' ? (
+              // Ethereum Send Form
+              <Card title="Send QTokens" subtitle="Secure transactions with quantum cryptography">
+                <form onSubmit={handleSend} className="space-y-6">
+                  {/* Fraud Detection Toggle */}
+                  <div className="flex items-center justify-between p-4 bg-gray-800/30 rounded-xl border border-gray-700">
+                    <div className="flex items-center">
+                      <div className={`w-3 h-3 rounded-full mr-3 ${monitoringEnabled ? 'bg-green-500 animate-pulse' : 'bg-slate-500'}`}></div>
                       <div>
-                        <h4 className="font-semibold text-white">Zero-Knowledge Proofs</h4>
-                        <p className="text-xs text-gray-400">Verify transaction attributes without revealing them</p>
+                        <span className="text-sm font-medium text-slate-300">AI Fraud Detection</span>
+                        <p className="text-xs text-slate-400">
+                          {monitoringEnabled ? 'Real-time monitoring active' : 'Monitoring disabled'}
+                          {monitoringEnabled && !wsConnection.isConnected && (
+                            <span className="text-yellow-400"> (WebSocket offline, using HTTP)</span>
+                          )}
+                        </p>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setMonitoringEnabled(!monitoringEnabled)}
+                      disabled={loading.mint || loading.fraud || loading.wsCheck}
+                      className={`relative inline-flex h-6 w-11 items-center rounded-full ${monitoringEnabled ? 'bg-green-500' : 'bg-gray-700'} disabled:opacity-50`}
+                    >
+                      <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${monitoringEnabled ? 'translate-x-6' : 'translate-x-1'}`} />
+                    </button>
+                  </div>
+
+                  {/* Recipient Address */}
+                  <div>
+                    <label className="block text-sm font-medium text-slate-300 mb-2">Recipient Address</label>
+                    <input
+                      type="text"
+                      value={toAddress}
+                      onChange={(e) => setToAddress(e.target.value)}
+                      placeholder="0x..."
+                      className="w-full px-4 py-3 bg-gray-900/50 border border-gray-700 rounded-lg text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all"
+                      disabled={loading.mint || loading.fraud || loading.wsCheck}
+                    />
+                  </div>
+
+                  {/* Amount */}
+                  <div>
+                    <label className="block text-sm font-medium text-slate-300 mb-2">Amount (Max 6 QTOK)</label>
+                    <input
+                      type="number"
+                      value={amount}
+                      onChange={(e) => setAmount(e.target.value)}
+                      placeholder="0.0"
+                      step="0.01"
+                      min="0"
+                      max="6"
+                      className="w-full px-4 py-3 bg-gray-900/50 border border-gray-700 rounded-lg text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all"
+                      disabled={loading.mint || loading.fraud || loading.wsCheck}
+                    />
+                    <div className="flex justify-between mt-2">
+                      <p className="text-xs text-slate-400">Available: {parseFloat(qTokenBalance).toFixed(4)} QTOK</p>
+                      <button
+                        type="button"
+                        onClick={() => setAmount(Math.min(6, parseFloat(qTokenBalance)).toString())}
+                        className="text-xs text-blue-400 hover:text-blue-300 disabled:opacity-50"
+                        disabled={loading.mint || loading.fraud || loading.wsCheck}
+                      >
+                        Use Max (6)
+                      </button>
+                    </div>
+                    {parseFloat(amount) > 4 && (
+                      <p className="text-xs text-yellow-400 mt-1">
+                        ⚠️ Amount exceeds risk threshold ({riskStats.risk_threshold} QTOK)
+                      </p>
+                    )}
+                  </div>
+
+                  {/* Quantum Security Toggle */}
+                  <div className={`p-4 rounded-xl border transition-all ${isPqc
+                    ? 'bg-gradient-to-r from-purple-500/10 to-blue-500/10 border-purple-500/30'
+                    : 'bg-gray-800/30 border-gray-700'}`}>
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <div className="flex items-center">
+                          <span className="text-sm font-medium text-slate-300">Quantum Security</span>
+                          {isPqc && (
+                            <span className="ml-2 text-xs px-2 py-1 bg-gradient-to-r from-purple-500/20 to-blue-500/20 text-purple-400 rounded border border-purple-500/30">
+                              🔐 PQC
+                            </span>
+                          )}
+                        </div>
+                        <p className="text-xs text-slate-400 mt-1">Dilithium2 Post-Quantum Signatures</p>
                       </div>
                       <button
                         type="button"
-                        onClick={() => setEnableZKP(!enableZKP)}
-                        className={`relative inline-flex h-6 w-11 items-center rounded-full ${enableZKP ? 'bg-purple-500' : 'bg-gray-700'}`}
+                        onClick={() => {
+                          if (!isPqc && quantumStatus !== 'online') {
+                            setError('PQC service is offline. Please check if the quantum service is running.');
+                            return;
+                          }
+                          setIsPqc(!isPqc);
+                        }}
+                        disabled={loading.mint || loading.fraud || loading.wsCheck || (quantumStatus !== 'online' && !isPqc)}
+                        className={`relative inline-flex h-7 w-14 items-center rounded-full transition-all ${isPqc ? 'bg-gradient-to-r from-purple-500 to-blue-500' : 'bg-gray-700'} disabled:opacity-50`}
                       >
-                        <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${enableZKP ? 'translate-x-6' : 'translate-x-1'}`} />
+                        <span className={`inline-block h-5 w-5 transform rounded-full bg-white transition-transform ${isPqc ? 'translate-x-8' : 'translate-x-1'}`} />
                       </button>
                     </div>
-
-                    {enableZKP && (
-                      <div className="space-y-2">
-                        <label className="block text-xs text-gray-400">Select additional attributes to prove:</label>
-                        <div className="flex flex-wrap gap-2">
-                          {['amount', 'recipient', 'nonce', 'timestamp'].map((attr) => (
-                            <button
-                              key={attr}
-                              type="button"
-                              onClick={() => {
-                                setSelectedAttributes(prev =>
-                                  prev.includes(attr)
-                                    ? prev.filter(a => a !== attr)
-                                    : [...prev, attr]
-                                );
-                              }}
-                              className={`px-3 py-1 text-xs rounded-full border transition-all ${selectedAttributes.includes(attr)
-                                ? 'bg-purple-500/20 border-purple-500/50 text-purple-400'
-                                : 'bg-gray-800 border-gray-700 text-gray-400 hover:border-gray-600'
-                                }`}
-                            >
-                              {attr}
-                              {selectedAttributes.includes(attr) && ' ✓'}
-                            </button>
-                          ))}
-                        </div>
-                        <p className="text-xs text-green-400 mt-2">
-                          ⚡ amount_gt_zero is always included (required for security)
-                        </p>
-                      </div>
+                    {quantumStatus !== 'online' && isPqc && (
+                      <p className="text-xs text-yellow-400 mt-2">
+                        ⚠️ PQC service is offline. Please check if the quantum service is running on port 8002.
+                      </p>
+                    )}
+                    {quantumStatus === 'online' && isPqc && (
+                      <p className="text-xs text-green-400 mt-2">
+                        ✅ Dilithium2 signatures with cryptanalysis
+                      </p>
+                    )}
+                    {!isPqc && quantumStatus === 'online' && (
+                      <p className="text-xs text-purple-400 mt-2">
+                        💡 Click to enable PQC security
+                      </p>
                     )}
                   </div>
-                )}
 
-                {/* Fraud Check Result */}
-                {fraudCheck && !showFraudWarning && (
-                  <div className={`p-4 rounded-xl border-l-4 ${
-                    fraudCheck.severity === 'High'
+                  {/* ZKP Toggle */}
+                  {isPqc && quantumStatus === 'online' && (
+                    <div className="p-4 bg-gradient-to-r from-purple-500/10 to-blue-500/10 rounded-lg border border-purple-500/30">
+                      <div className="flex items-center justify-between mb-3">
+                        <div>
+                          <h4 className="font-semibold text-white">Zero-Knowledge Proofs</h4>
+                          <p className="text-xs text-gray-400">Verify transaction attributes without revealing them</p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => setEnableZKP(!enableZKP)}
+                          className={`relative inline-flex h-6 w-11 items-center rounded-full ${enableZKP ? 'bg-purple-500' : 'bg-gray-700'}`}
+                        >
+                          <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${enableZKP ? 'translate-x-6' : 'translate-x-1'}`} />
+                        </button>
+                      </div>
+
+                      {enableZKP && (
+                        <div className="space-y-2">
+                          <label className="block text-xs text-gray-400">Select additional attributes to prove:</label>
+                          <div className="flex flex-wrap gap-2">
+                            {['amount', 'recipient', 'nonce', 'timestamp'].map((attr) => (
+                              <button
+                                key={attr}
+                                type="button"
+                                onClick={() => {
+                                  setSelectedAttributes(prev =>
+                                    prev.includes(attr)
+                                      ? prev.filter(a => a !== attr)
+                                      : [...prev, attr]
+                                  );
+                                }}
+                                className={`px-3 py-1 text-xs rounded-full border transition-all ${selectedAttributes.includes(attr)
+                                  ? 'bg-purple-500/20 border-purple-500/50 text-purple-400'
+                                  : 'bg-gray-800 border-gray-700 text-gray-400 hover:border-gray-600'
+                                  }`}
+                              >
+                                {attr}
+                                {selectedAttributes.includes(attr) && ' ✓'}
+                              </button>
+                            ))}
+                          </div>
+                          <p className="text-xs text-green-400 mt-2">
+                            ⚡ amount_gt_zero is always included (required for security)
+                          </p>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Fraud Check Result */}
+                  {fraudCheck && !showFraudWarning && (
+                    <div className={`p-4 rounded-xl border-l-4 ${fraudCheck.severity === 'High'
                       ? 'bg-red-500/10 border-red-500'
                       : fraudCheck.severity === 'Medium'
                         ? 'bg-yellow-500/10 border-yellow-500'
                         : 'bg-green-500/10 border-green-500'
-                  }`}>
-                    <div>
-                      <h4 className="font-bold text-white flex items-center">
-                        <span className={`w-3 h-3 rounded-full mr-2 ${
-                          fraudCheck.severity === 'High' ? 'bg-red-500' :
-                          fraudCheck.severity === 'Medium' ? 'bg-yellow-500' : 'bg-green-500'
-                        }`}></span>
-                        Risk: {fraudCheck.severity} ({(fraudCheck.probability * 100).toFixed(1)}%)
-                      </h4>
-                      <p className="text-slate-300 mt-2 text-sm">{fraudCheck.reason}</p>
+                      }`}>
+                      <div>
+                        <h4 className="font-bold text-white flex items-center">
+                          <span className={`w-3 h-3 rounded-full mr-2 ${fraudCheck.severity === 'High' ? 'bg-red-500' :
+                            fraudCheck.severity === 'Medium' ? 'bg-yellow-500' : 'bg-green-500'
+                            }`}></span>
+                          Risk: {fraudCheck.severity} ({(fraudCheck.probability * 100).toFixed(1)}%)
+                        </h4>
+                        <p className="text-slate-300 mt-2 text-sm">{fraudCheck.reason}</p>
+                      </div>
                     </div>
-                  </div>
-                )}
-
-                {/* Send Button */}
-                <button
-                  type="submit"
-                  disabled={loading.mint || loading.fraud || loading.wsCheck || !signer || (isPqc && quantumStatus !== 'online')}
-                  className={`w-full py-3 px-4 text-white font-bold rounded-lg hover:opacity-90 transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center ${isPqc
-                    ? 'bg-gradient-to-r from-purple-600 to-blue-600'
-                    : 'bg-gradient-to-r from-blue-600 to-cyan-500'}`}
-                >
-                  {loading.wsCheck ? (
-                    <>
-                      <LoadingSpinner size="sm" className="mr-2" />
-                      Calculating Risk...
-                    </>
-                  ) : loading.mint ? (
-                    <>
-                      <LoadingSpinner size="sm" className="mr-2" />
-                      {isPqc ? (enableZKP ? 'Signing with PQC+ZKP...' : 'Signing with PQC...') : 'Processing...'}
-                    </>
-                  ) : !signer ? (
-                    'Connect Wallet First'
-                  ) : isPqc && quantumStatus !== 'online' ? (
-                    'Enable PQC First'
-                  ) : (
-                    `Send ${isPqc ? (enableZKP ? 'with PQC+ZKP' : 'with PQC') : ''}`
                   )}
-                </button>
-              </form>
-            </Card>
+
+                  {/* Send Button */}
+                  <button
+                    type="submit"
+                    disabled={loading.mint || loading.fraud || loading.wsCheck || !signer || (isPqc && quantumStatus !== 'online')}
+                    className={`w-full py-3 px-4 text-white font-bold rounded-lg hover:opacity-90 transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center ${isPqc
+                      ? 'bg-gradient-to-r from-purple-600 to-blue-600'
+                      : 'bg-gradient-to-r from-blue-600 to-cyan-500'}`}
+                  >
+                    {loading.wsCheck ? (
+                      <>
+                        <LoadingSpinner size="sm" className="mr-2" />
+                        Calculating Risk...
+                      </>
+                    ) : loading.mint ? (
+                      <>
+                        <LoadingSpinner size="sm" className="mr-2" />
+                        {isPqc ? (enableZKP ? 'Signing with PQC+ZKP...' : 'Signing with PQC...') : 'Processing...'}
+                      </>
+                    ) : !signer ? (
+                      'Connect Wallet First'
+                    ) : isPqc && quantumStatus !== 'online' ? (
+                      'Enable PQC First'
+                    ) : (
+                      `Send ${isPqc ? (enableZKP ? 'with PQC+ZKP' : 'with PQC') : ''}`
+                    )}
+                  </button>
+                </form>
+              </Card>
+            ) : (
+              // Algorand Send Card
+              isAlgoConnected ? (
+                <Card title="Send ALGO" subtitle="Transfer ALGO on Algorand TestNet">
+                  <div className="space-y-4">
+                    <div className="p-4 bg-green-500/10 rounded-lg border border-green-500/30">
+                      <p className="text-sm text-gray-300">
+                        Connected to Algorand TestNet
+                      </p>
+                      <p className="text-xs text-gray-400 mt-2">
+                        Balance: {algoBalance?.toFixed(4) || '0'} ALGO
+                      </p>
+                      <div className="mt-2 flex items-center gap-2">
+                        <QuantumStatusBadge />
+                      </div>
+                    </div>
+                    <button
+                      onClick={() => setShowAlgorandSendModal(true)}
+                      className="w-full py-3 bg-gradient-to-r from-green-600 to-emerald-500 text-white rounded-lg hover:opacity-90 transition-all"
+                    >
+                      Send ALGO {quantumStatus === 'online' && '(PQC Available)'}
+                    </button>
+                  </div>
+                </Card>
+              ) : (
+                <Card title="Connect Algorand Wallet">
+                  <div className="text-center py-4">
+                    <p className="text-slate-400 mb-4">Connect your Pera Wallet to send ALGO</p>
+                    <button
+                      onClick={connectAlgoWallet}
+                      className="w-full py-3 bg-gradient-to-r from-green-600 to-emerald-500 text-white rounded-lg hover:opacity-90 transition-all"
+                    >
+                      Connect Pera Wallet
+                    </button>
+                  </div>
+                </Card>
+              )
+            )}
 
             {/* Quick Stats */}
             <Card title="Quick Stats">
               <div className="grid grid-cols-2 gap-4">
                 <div className="text-center p-4 bg-gray-800/30 rounded-lg">
-                  <div className="text-2xl font-bold text-white">{transactions.length}</div>
+                  <div className="text-2xl font-bold text-white">
+                    {activeTab === 'ethereum' ? transactions.length : algoTransactions.length}
+                  </div>
                   <div className="text-xs text-slate-400">Total TX</div>
                 </div>
                 <div className="text-center p-4 bg-gray-800/30 rounded-lg">
-                  <div className="text-2xl font-bold text-white">{riskStats.high_risk_count}</div>
-                  <div className="text-xs text-slate-400">High Risk</div>
+                  <div className="text-2xl font-bold text-white">
+                    {activeTab === 'ethereum' ? riskStats.high_risk_count : algoTransactions.filter(tx => tx.status === 'Failed').length}
+                  </div>
+                  <div className="text-xs text-slate-400">{activeTab === 'ethereum' ? 'High Risk' : 'Failed'}</div>
                 </div>
                 <div className="text-center p-4 bg-gray-800/30 rounded-lg">
-                  <div className="text-2xl font-bold text-white">{riskStats.medium_risk_count}</div>
-                  <div className="text-xs text-slate-400">Medium Risk</div>
+                  <div className="text-2xl font-bold text-white">
+                    {activeTab === 'ethereum' ? riskStats.medium_risk_count : algoTransactions.filter(tx => tx.algoType === 'pay').length}
+                  </div>
+                  <div className="text-xs text-slate-400">{activeTab === 'ethereum' ? 'Medium Risk' : 'Payments'}</div>
                 </div>
                 <div className="text-center p-4 bg-gray-800/30 rounded-lg">
-                  <div className="text-2xl font-bold text-white">{realTimeAlerts.length}</div>
-                  <div className="text-xs text-slate-400">Alerts</div>
+                  <div className="text-2xl font-bold text-white">
+                    {activeTab === 'ethereum' ? realTimeAlerts.length : algoTransactions.filter(tx => tx.algoType === 'acfg').length}
+                  </div>
+                  <div className="text-xs text-slate-400">{activeTab === 'ethereum' ? 'Alerts' : 'NFTs'}</div>
                 </div>
               </div>
             </Card>
@@ -2743,43 +2765,171 @@ const Transactions: React.FC = () => {
 
           {/* Right: Transaction History */}
           <div className="lg:col-span-2">
-            <Card 
-              title="Transaction History" 
-              subtitle="All your QToken transactions with security analysis"
+            <Card
+              title={activeTab === 'ethereum' ? 'QToken Transaction History' : 'Algorand Transaction History'}
+              subtitle={activeTab === 'ethereum'
+                ? 'All your QToken transactions with security analysis'
+                : 'Your Algorand TestNet transactions'
+              }
             >
-              {transactions.length > 0 && (
-                <div className="mb-4 flex justify-end">
-                  <button
-                    onClick={clearAllTransactions}
-                    className="text-xs px-3 py-1 bg-red-600/20 text-red-400 rounded hover:bg-red-600/30 transition-colors flex items-center gap-1"
-                  >
-                    <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                    </svg>
-                    Clear All
-                  </button>
+              {algoLoading && activeTab === 'algorand' && (
+                <div className="flex justify-center py-8">
+                  <LoadingSpinner size="md" />
                 </div>
               )}
-              {transactions.length > 0 ? (
+
+              {!algoLoading && currentTransactions.length > 0 ? (
                 <div className="space-y-4">
-                  {transactions.map((tx, index) => (
-                    <TransactionCard
-                      key={index}
-                      transaction={tx}
-                      index={index}
-                      onViewDetails={() => viewAnalysisDetails(tx)}
-                      onDelete={deleteTransaction}
-                    />
+                  {currentTransactions.map((tx, index) => (
+                    <div
+                      key={tx.hash + index}
+                      className={`p-4 rounded-lg border ${activeTab === 'ethereum'
+                        ? tx.fraudSeverity === 'High'
+                          ? 'bg-red-500/10 border-red-500/30'
+                          : tx.fraudSeverity === 'Medium'
+                            ? 'bg-yellow-500/10 border-yellow-500/30'
+                            : 'bg-gray-800/30 border-gray-700'
+                        : tx.algoType === 'pay'
+                          ? 'bg-blue-500/10 border-blue-500/30'
+                          : tx.algoType === 'acfg'
+                            ? 'bg-purple-500/10 border-purple-500/30'
+                            : 'bg-gray-800/30 border-gray-700'
+                        }`}
+                    >
+                      <div className="flex items-start justify-between">
+                        <div className="flex items-start space-x-3">
+                          <div className="text-2xl">
+                            {activeTab === 'ethereum'
+                              ? (tx.isPqc ? '🔐' : '💰')
+                              : tx.algoType === 'pay'
+                                ? '💸'
+                                : tx.algoType === 'acfg'
+                                  ? '🎨'
+                                  : '📝'
+                            }
+                          </div>
+                          <div>
+                            <div className="flex items-center gap-2 mb-1">
+                              <span className="text-sm font-medium text-white">
+                                {activeTab === 'ethereum' ? 'QToken Transfer' :
+                                  tx.algoType === 'pay' ? 'ALGO Payment' :
+                                    tx.algoType === 'acfg' ? 'NFT Creation' : 'Asset Transfer'}
+                              </span>
+                              <span className={`text-xs px-2 py-0.5 rounded-full ${tx.status === 'Completed' ? 'bg-green-500/20 text-green-400' :
+                                tx.status === 'Failed' ? 'bg-red-500/20 text-red-400' :
+                                  tx.status === 'Suspicious' ? 'bg-orange-500/20 text-orange-400' :
+                                    'bg-gray-500/20 text-gray-400'
+                                }`}>
+                                {tx.status}
+                              </span>
+                              {activeTab === 'ethereum' && tx.isPqc && (
+                                <span className="text-xs px-2 py-0.5 bg-purple-500/20 text-purple-400 rounded">
+                                  PQC
+                                </span>
+                              )}
+                              {activeTab === 'algorand' && tx.assetId && (
+                                <span className="text-xs px-2 py-0.5 bg-purple-500/20 text-purple-400 rounded">
+                                  #{tx.assetId}
+                                </span>
+                              )}
+                              {activeTab === 'algorand' && tx.isPqc && (
+                                <span className="text-xs px-2 py-0.5 bg-purple-500/20 text-purple-400 rounded">
+                                  PQC
+                                </span>
+                              )}
+                            </div>
+
+                            <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
+                              <span className="text-gray-400">From:</span>
+                              <span className="text-white font-mono">{formatAddress(tx.from)}</span>
+                              <span className="text-gray-400">To:</span>
+                              <span className="text-white font-mono">{formatAddress(tx.to)}</span>
+                              <span className="text-gray-400">Amount:</span>
+                              <span className="text-white">{tx.amount} {activeTab === 'ethereum' ? 'QTOK' : 'ALGO'}</span>
+                              {activeTab === 'algorand' && tx.fee && (
+                                <>
+                                  <span className="text-gray-400">Fee:</span>
+                                  <span className="text-white">{tx.fee.toFixed(3)} ALGO</span>
+                                </>
+                              )}
+                            </div>
+
+                            <div className="mt-2 text-xs text-gray-500">
+                              {new Date(tx.timestamp).toLocaleString()}
+                            </div>
+
+                            {/* Show PQC/ZKP indicators for Algorand */}
+                            {activeTab === 'algorand' && (tx.cryptanalysis || tx.zkpVerification) && (
+                              <div className="mt-2 flex items-center gap-2">
+                                {tx.cryptanalysis && (
+                                  <span className={`text-xs px-2 py-0.5 rounded ${tx.cryptanalysis.secure ? 'bg-green-500/20 text-green-400' : 'bg-yellow-500/20 text-yellow-400'
+                                    }`}>
+                                    PQC: {tx.cryptanalysis.risk_score}%
+                                  </span>
+                                )}
+                                {tx.zkpVerification && (
+                                  <span className={`text-xs px-2 py-0.5 rounded ${tx.zkpVerification.verified ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'
+                                    }`}>
+                                    ZKP: {tx.zkpVerification.verified ? '✓' : '✗'}
+                                  </span>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-2">
+                          {activeTab === 'ethereum' && tx.fraudScore && (
+                            <SeverityBadge severity={tx.fraudSeverity || 'Low'} />
+                          )}
+                          {tx.explorerUrl && (
+                            <a
+                              href={tx.explorerUrl}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-xs text-blue-400 hover:underline"
+                            >
+                              View
+                            </a>
+                          )}
+                          <button
+                            onClick={() => deleteTransaction(tx.hash)}
+                            className="text-xs text-red-400 hover:text-red-300"
+                          >
+                            ✕
+                          </button>
+                        </div>
+                      </div>
+
+                      {activeTab === 'ethereum' && tx.fraudReason && (
+                        <div className="mt-2 text-xs text-yellow-400 border-t border-gray-700 pt-2">
+                          ⚠️ {tx.fraudReason}
+                        </div>
+                      )}
+
+                      {activeTab === 'algorand' && tx.note && (
+                        <div className="mt-2 text-xs text-gray-400 border-t border-gray-700 pt-2">
+                          Note: {tx.note}
+                        </div>
+                      )}
+                    </div>
                   ))}
                 </div>
               ) : (
-                <div className="text-center py-12">
-                  <div className="w-16 h-16 mx-auto mb-4 rounded-full bg-gray-800/50 flex items-center justify-center">
-                    <span className="text-2xl">📄</span>
+                !algoLoading && (
+                  <div className="text-center py-12">
+                    <div className="w-16 h-16 mx-auto mb-4 rounded-full bg-gray-800/50 flex items-center justify-center">
+                      <span className="text-2xl">📄</span>
+                    </div>
+                    <p className="text-slate-400 mb-2">No transactions yet</p>
+                    <p className="text-sm text-slate-500">
+                      {activeTab === 'ethereum'
+                        ? 'Send your first QToken transaction to get started'
+                        : 'Send your first ALGO transaction to get started'
+                      }
+                    </p>
                   </div>
-                  <p className="text-slate-400 mb-2">No transactions yet</p>
-                  <p className="text-sm text-slate-500">Send your first QToken transaction to get started</p>
-                </div>
+                )
               )}
             </Card>
           </div>
@@ -2793,7 +2943,7 @@ const Transactions: React.FC = () => {
                 <div className="flex-shrink-0 w-6 h-6 rounded-full bg-purple-500/20 flex items-center justify-center mr-3">
                   <span className="text-xs text-purple-400">🔐</span>
                 </div>
-                <span className="text-slate-300 text-sm">Dilithium2 post-quantum signatures</span>
+                <span className="text-slate-300 text-sm">Dilithium2 post-quantum signatures for both networks</span>
               </div>
               <div className="flex items-start">
                 <div className="flex-shrink-0 w-6 h-6 rounded-full bg-blue-500/20 flex items-center justify-center mr-3">
@@ -2810,7 +2960,7 @@ const Transactions: React.FC = () => {
                 <div className="flex-shrink-0 w-6 h-6 rounded-full bg-blue-500/20 flex items-center justify-center mr-3">
                   <span className="text-xs text-blue-400">🔍</span>
                 </div>
-                <span className="text-slate-300 text-sm">Zero-knowledge proof verification</span>
+                <span className="text-slate-300 text-sm">Zero-knowledge proof verification for Ethereum & Algorand</span>
               </div>
               <div className="flex items-start">
                 <div className="flex-shrink-0 w-6 h-6 rounded-full bg-green-500/20 flex items-center justify-center mr-3">
@@ -2827,7 +2977,7 @@ const Transactions: React.FC = () => {
                 <div className="flex-shrink-0 w-6 h-6 rounded-full bg-green-500/20 flex items-center justify-center mr-3">
                   <span className="text-xs text-green-400">🤖</span>
                 </div>
-                <span className="text-slate-300 text-sm">Probabilistic risk scoring</span>
+                <span className="text-slate-300 text-sm">Probabilistic risk scoring for Ethereum</span>
               </div>
               <div className="flex items-start">
                 <div className="flex-shrink-0 w-6 h-6 rounded-full bg-yellow-500/20 flex items-center justify-center mr-3">
@@ -2897,7 +3047,20 @@ const Transactions: React.FC = () => {
           </div>
         )}
 
-        {/* Unified Analysis Modal - Works for ALL risk levels */}
+        {/* Algorand Send Modal with PQC/ZKP */}
+        {algoAccount && (
+          <AlgorandSendModal
+            isOpen={showAlgorandSendModal}
+            onClose={() => setShowAlgorandSendModal(false)}
+            account={algoAccount}
+            onSuccess={handleAlgoSendSuccess}
+            onError={handleAlgoSendError}
+            quantumStatus={quantumStatus}
+            quantumWalletId={quantumWalletId}
+          />
+        )}
+
+        {/* Unified Analysis Modal */}
         {selectedAnalysis && (
           <UnifiedAnalysisModal
             isOpen={!!selectedAnalysis}
