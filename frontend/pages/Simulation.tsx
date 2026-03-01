@@ -23,7 +23,7 @@ type PQCResultShape = {
   [k: string]: any;
 };
 
-const RSA2048_NOTE = `Demo note: factoring a real 2048-bit RSA modulus is infeasible in this demo. This option simulates the attempted attack and then reports that RSA-2048 remains secure.`;
+const RSA2048_NOTE = "Demo note: factoring a real 2048-bit RSA modulus is infeasible in this demo. This option simulates the attempted attack and then reports that RSA-2048 remains secure.";
 
 const Simulation: React.FC = () => {
   const [isSimulating, setIsSimulating] = useState(false);
@@ -54,6 +54,9 @@ const Simulation: React.FC = () => {
 
   // interval ref for RSA progress
   const progressIntervalRef = useRef<number | null>(null);
+
+  // Render backend URL
+  const BACKEND_URL = "https://qchain-shor-pqc-backend.onrender.com";
 
   const startProgress = (holdBelow100 = true) => {
     setRsaProgress(0);
@@ -145,8 +148,9 @@ const Simulation: React.FC = () => {
 
   const fetchQuantumCircuit = async (N: number) => {
     try {
-      const response = await axios.get("https://vibrant-analysis-production.up.railway.app/api/get_shor_circuit", {
-        params: { N }
+      const response = await axios.get(`${BACKEND_URL}/api/get_shor_circuit`, {
+        params: { N },
+        timeout: 30000 // 30 second timeout for circuit fetch
       });
       if (response.data.success) {
         setQuantumCircuit(response.data.circuit);
@@ -230,9 +234,9 @@ const Simulation: React.FC = () => {
     if (qInput) params.q = Number(qInput);
 
     try {
-      const resp = await axios.get<ResultShape>("https://vibrant-analysis-production.up.railway.app/api/simulate_shor", {
+      const resp = await axios.get<ResultShape>(`${BACKEND_URL}/api/simulate_shor`, {
         params,
-        timeout: 60_000,
+        timeout: 90000, // Increased timeout for cold start
       });
 
       setResult(resp.data);
@@ -258,7 +262,14 @@ const Simulation: React.FC = () => {
       stopProgress();
       setRsaProgress(0);
       const msg = err?.response?.data?.error ?? err?.message ?? "Unknown error";
-      setError(String(msg));
+      
+      // Check if it's a timeout error
+      if (err.code === 'ECONNABORTED' || msg.includes('timeout')) {
+        setError("Request timeout. The Render backend may be waking up from sleep. Please try again in 30 seconds.");
+      } else {
+        setError(String(msg));
+      }
+      
       setPqcStatus("secure");
     } finally {
       setTimeout(() => setIsSimulating(false), 600);
@@ -276,9 +287,9 @@ const Simulation: React.FC = () => {
     const params: Record<string, string | number> = { message: messageInput || "A" };
 
     try {
-      const resp = await axios.get<PQCResultShape>("https://vibrant-analysis-production.up.railway.app/api/simulate_pqc", {
+      const resp = await axios.get<PQCResultShape>(`${BACKEND_URL}/api/simulate_pqc`, {
         params,
-        timeout: 60_000,
+        timeout: 90000, // Increased timeout for cold start
       });
 
       stopPqcProgress();
@@ -294,7 +305,13 @@ const Simulation: React.FC = () => {
       stopPqcProgress();
       setPqcProgress(0);
       const msg = err?.response?.data?.error ?? err?.message ?? "Unknown error";
-      setError(String(msg));
+      
+      // Check if it's a timeout error
+      if (err.code === 'ECONNABORTED' || msg.includes('timeout')) {
+        setError("Request timeout. The Render backend may be waking up from sleep. Please try again in 30 seconds.");
+      } else {
+        setError(String(msg));
+      }
     } finally {
       setTimeout(() => setIsPqcSimulating(false), 600);
     }
@@ -386,6 +403,16 @@ const Simulation: React.FC = () => {
               <div className="text-sm text-slate-400">
                 <strong>Tip:</strong> Use <em>Fast</em> for toy demos. Use <em>RSA-2048</em> to show real-world RSA remains secure. Use the PQC button to demonstrate post-quantum resistance.
               </div>
+            </div>
+
+            {/* Cold start warning for Render */}
+            <div className="mt-2 p-2 bg-yellow-900/30 border border-yellow-700 rounded-lg">
+              <p className="text-yellow-400 text-sm flex items-center gap-2">
+                <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+                  <path fillRule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
+                </svg>
+                <span><strong>Render Cold Start:</strong> First request may take 30-60 seconds. Please be patient.</span>
+              </p>
             </div>
           </div>
 
