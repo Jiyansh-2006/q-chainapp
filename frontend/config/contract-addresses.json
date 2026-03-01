@@ -1,0 +1,15 @@
+{
+  "localhost": {
+    "qTokenAddress": import.meta.env.VITE_QTOKEN_ADDRESS,
+    "quantumNFTAddress": import.meta.env.VITE_QUANTUM_NFT_ADDRESS
+  },
+  "sepolia": {
+    "qTokenAddress": "",
+    "quantumNFTAddress": ""
+  },
+  "mainnet": {
+    "qTokenAddress": "",
+    "quantumNFTAddress": ""
+  }
+}
+

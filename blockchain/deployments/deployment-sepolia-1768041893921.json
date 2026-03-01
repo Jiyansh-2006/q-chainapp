@@ -1,0 +1,19 @@
+{
+  "network": {
+    "name": "unknown",
+    "chainId": "31337"
+  },
+  "contract": {
+    "name": "QToken",
+    "address": "0x5FbDB2315678afecb367f032d93F642f64180aa3",
+    "deployer": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+    "transactionHash": "0xa178214f7b35188f5c1b1fb636100610ee5eee537891673bdfcd8d7aa6cf1342",
+    "timestamp": "2026-01-10T10:44:53.912Z"
+  },
+  "details": {
+    "name": "Quantum Token",
+    "symbol": "QTOK",
+    "decimals": "18",
+    "totalSupply": "1000000.0"
+  }
+}

@@ -1,0 +1,28 @@
+{
+  "network": {
+    "name": "localhost",
+    "chainId": "31337"
+  },
+  "deployer": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+  "timestamp": "2026-01-12T10:37:23.089Z",
+  "contracts": {
+    "qToken": {
+      "address": "0xDc64a140Aa3E981100a9becA4E685f962f0cF6C9",
+      "name": "Quantum Token",
+      "symbol": "QTOK",
+      "decimals": "18",
+      "totalSupply": "1000000.0",
+      "owner": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+      "deployerBalance": "1000000.0"
+    },
+    "quantumNFT": {
+      "address": "0x5FC8d32690cc91D4c39d9d3abcBD16989F875707",
+      "name": "Quantum NFT",
+      "symbol": "QNFT",
+      "owner": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+      "mintPrice": "0.001",
+      "maxSupply": "10000",
+      "mintActive": true
+    }
+  }
+}

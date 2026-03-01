@@ -1,0 +1,23 @@
+{
+  "name": "quantum-nft",
+  "version": "1.0.0",
+  "description": "Quantum NFT Smart Contracts",
+  "main": "index.js",
+  "scripts": {
+    "compile": "hardhat compile",
+    "test": "hardhat test",
+    "node": "hardhat node",
+    "deploy": "hardhat run scripts/deploy-all.js --network localhost",
+    "deploy:sepolia": "hardhat run scripts/deploy-all.js --network sepolia",
+    "deploy:hardhat": "hardhat run scripts/deploy-all.js",
+    "check-balances": "hardhat run scripts/check-balances.js --network localhost"
+  },
+  "devDependencies": {
+    "@nomicfoundation/hardhat-toolbox": "^5.0.0",
+    "dotenv": "^16.4.7",
+    "hardhat": "^2.28.4"
+  },
+  "dependencies": {
+    "@openzeppelin/contracts": "^4.9.5"
+  }
+}

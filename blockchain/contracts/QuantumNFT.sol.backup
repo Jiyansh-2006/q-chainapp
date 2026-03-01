@@ -1,0 +1,292 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.19;
+
+import "@openzeppelin/contracts/token/ERC721/ERC721.sol";
+import "@openzeppelin/contracts/token/ERC721/extensions/ERC721URIStorage.sol";
+import "@openzeppelin/contracts/access/Ownable.sol";
+import "@openzeppelin/contracts/utils/Counters.sol";
+import "@openzeppelin/contracts/utils/Strings.sol";
+
+contract QuantumNFT is ERC721, ERC721URIStorage, Ownable {
+    using Counters for Counters.Counter;
+    using Strings for uint256;
+    
+    Counters.Counter private _tokenIdCounter;
+    
+    // NFT Properties
+    struct NFTData {
+        string name;
+        string description;
+        string quantumHash;
+        uint256 createdAt;
+        address creator;
+        bool isVerified;
+    }
+    
+    // Minting parameters
+    uint256 public mintPrice = 0.001 ether;
+    uint256 public constant MAX_SUPPLY = 10000;
+    bool public mintActive = true;
+    
+    // Mappings
+    mapping(uint256 => NFTData) public nftData;
+    mapping(string => bool) public usedQuantumHashes;
+    mapping(address => uint256) public mintCountPerAddress;
+    mapping(uint256 => string) public tokenIdToCID;
+    
+    // Events
+    event NFTMinted(
+        uint256 indexed tokenId,
+        address indexed owner,
+        string name,
+        string quantumHash,
+        string tokenURI
+    );
+    
+    event MintPriceUpdated(uint256 newPrice);
+    event MintActiveUpdated(bool isActive);
+    
+    constructor() ERC721("Quantum NFT", "QNFT") Ownable(msg.sender) {}
+    
+    /**
+     * @dev Mint a new Quantum NFT
+     */
+    function mintNFT(
+        string memory name,
+        string memory description,
+        string memory uri,
+        string memory quantumHash
+    ) external payable returns (uint256) {
+        require(mintActive, "Minting not active");
+        require(msg.value >= mintPrice, "Insufficient payment");
+        require(_tokenIdCounter.current() < MAX_SUPPLY, "Max supply reached");
+        require(!usedQuantumHashes[quantumHash], "Quantum hash already used");
+        require(bytes(name).length > 0, "Name cannot be empty");
+        require(bytes(quantumHash).length > 0, "Quantum hash cannot be empty");
+        
+        uint256 tokenId = _tokenIdCounter.current();
+        _tokenIdCounter.increment();
+        
+        // Mint the NFT
+        _safeMint(msg.sender, tokenId);
+        _setTokenURI(tokenId, uri);
+        
+        // Store NFT data
+        nftData[tokenId] = NFTData({
+            name: name,
+            description: description,
+            quantumHash: quantumHash,
+            createdAt: block.timestamp,
+            creator: msg.sender,
+            isVerified: true
+        });
+        
+        tokenIdToCID[tokenId] = uri;
+        usedQuantumHashes[quantumHash] = true;
+        mintCountPerAddress[msg.sender]++;
+        
+        // Refund excess payment
+        if (msg.value > mintPrice) {
+            payable(msg.sender).transfer(msg.value - mintPrice);
+        }
+        
+        emit NFTMinted(tokenId, msg.sender, name, quantumHash, uri);
+        
+        return tokenId;
+    }
+    
+    /**
+     * @dev Batch mint NFTs (max 5 at a time)
+     */
+    function batchMint(
+        string[] memory names,
+        string[] memory descriptions,
+        string[] memory uris,
+        string[] memory quantumHashes
+    ) external payable returns (uint256[] memory) {
+        require(names.length == descriptions.length, "Array length mismatch");
+        require(names.length == uris.length, "Array length mismatch");
+        require(names.length == quantumHashes.length, "Array length mismatch");
+        require(names.length <= 5, "Max 5 NFTs per batch");
+        require(msg.value >= mintPrice * names.length, "Insufficient payment");
+        
+        uint256[] memory tokenIds = new uint256[](names.length);
+        
+        for (uint256 i = 0; i < names.length; i++) {
+            // Call the mint function directly
+            tokenIds[i] = _mintSingleNFT(
+                names[i],
+                descriptions[i],
+                uris[i],
+                quantumHashes[i],
+                msg.sender
+            );
+        }
+        
+        return tokenIds;
+    }
+    
+    /**
+     * @dev Internal function to mint single NFT
+     */
+    function _mintSingleNFT(
+        string memory name,
+        string memory description,
+        string memory uri,
+        string memory quantumHash,
+        address minter
+    ) internal returns (uint256) {
+        require(mintActive, "Minting not active");
+        require(_tokenIdCounter.current() < MAX_SUPPLY, "Max supply reached");
+        require(!usedQuantumHashes[quantumHash], "Quantum hash already used");
+        require(bytes(name).length > 0, "Name cannot be empty");
+        require(bytes(quantumHash).length > 0, "Quantum hash cannot be empty");
+        
+        uint256 tokenId = _tokenIdCounter.current();
+        _tokenIdCounter.increment();
+        
+        // Mint the NFT
+        _safeMint(minter, tokenId);
+        _setTokenURI(tokenId, uri);
+        
+        // Store NFT data
+        nftData[tokenId] = NFTData({
+            name: name,
+            description: description,
+            quantumHash: quantumHash,
+            createdAt: block.timestamp,
+            creator: minter,
+            isVerified: true
+        });
+        
+        tokenIdToCID[tokenId] = uri;
+        usedQuantumHashes[quantumHash] = true;
+        mintCountPerAddress[minter]++;
+        
+        emit NFTMinted(tokenId, minter, name, quantumHash, uri);
+        
+        return tokenId;
+    }
+    
+    /**
+     * @dev Get NFT details
+     */
+    function getNFTDetails(uint256 tokenId) external view returns (
+        string memory name,
+        string memory description,
+        string memory quantumHash,
+        uint256 createdAt,
+        address creator,
+        bool isVerified,
+        string memory uri
+    ) {
+        require(_exists(tokenId), "NFT does not exist");
+        
+        NFTData memory data = nftData[tokenId];
+        return (
+            data.name,
+            data.description,
+            data.quantumHash,
+            data.createdAt,
+            data.creator,
+            data.isVerified,
+            tokenURI(tokenId)
+        );
+    }
+    
+    /**
+     * @dev Get all NFTs owned by an address
+     */
+    function getOwnedNFTs(address owner) external view returns (uint256[] memory) {
+        uint256 balance = balanceOf(owner);
+        uint256[] memory tokens = new uint256[](balance);
+        
+        uint256 index = 0;
+        for (uint256 i = 0; i < _tokenIdCounter.current(); i++) {
+            if (_exists(i) && ownerOf(i) == owner) {
+                tokens[index] = i;
+                index++;
+            }
+        }
+        
+        return tokens;
+    }
+    
+    /**
+     * @dev Verify quantum hash
+     */
+    function verifyQuantumHash(uint256 tokenId, string memory quantumHash) 
+        external 
+        view 
+        returns (bool) 
+    {
+        require(_exists(tokenId), "NFT does not exist");
+        return keccak256(bytes(nftData[tokenId].quantumHash)) == keccak256(bytes(quantumHash));
+    }
+    
+    /**
+     * @dev Get total NFTs minted
+     */
+    function totalMinted() external view returns (uint256) {
+        return _tokenIdCounter.current();
+    }
+    
+    /**
+     * @dev Owner: Update mint price
+     */
+    function setMintPrice(uint256 newPrice) external onlyOwner {
+        require(newPrice > 0, "Price must be greater than 0");
+        mintPrice = newPrice;
+        emit MintPriceUpdated(newPrice);
+    }
+    
+    /**
+     * @dev Owner: Toggle minting
+     */
+    function setMintActive(bool isActive) external onlyOwner {
+        mintActive = isActive;
+        emit MintActiveUpdated(isActive);
+    }
+    
+    /**
+     * @dev Owner: Withdraw contract balance
+     */
+    function withdraw() external onlyOwner {
+        uint256 balance = address(this).balance;
+        require(balance > 0, "No balance to withdraw");
+        
+        (bool success, ) = payable(owner()).call{value: balance}("");
+        require(success, "Withdraw failed");
+    }
+    
+    /**
+     * @dev Override supportsInterface
+     */
+    function supportsInterface(bytes4 interfaceId)
+        public
+        view
+        override(ERC721, ERC721URIStorage)
+        returns (bool)
+    {
+        return super.supportsInterface(interfaceId);
+    }
+    
+    /**
+     * @dev Override tokenURI
+     */
+    function tokenURI(uint256 tokenId)
+        public
+        view
+        override(ERC721, ERC721URIStorage)
+        returns (string memory)
+    {
+        return super.tokenURI(tokenId);
+    }
+    
+    /**
+     * @dev Check if token exists
+     */
+    function _exists(uint256 tokenId) internal view returns (bool) {
+        return _ownerOf(tokenId) != address(0);
+    }
+}

@@ -1,0 +1,27 @@
+# Node
+node_modules/
+.env
+.env.local
+
+# Python
+__pycache__/
+*.pyc
+venv/
+.env/
+
+# WSL
+*.log
+
+# AI Models
+*.pkl
+*.joblib
+
+# Blockchain
+artifacts/
+cache/
+
+# OS
+.DS_Store
+Thumbs.db
+
+liboqs

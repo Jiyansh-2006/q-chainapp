@@ -1,0 +1,5 @@
+
+{
+  "name": "Q-Chain Dashboard",
+  "description": "A React-based frontend for a quantum-resilient blockchain dashboard. It includes features for wallet connection, token transactions, NFT minting, attack simulation, and AI-powered fraud alerts."
+}
