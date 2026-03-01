@@ -187,21 +187,11 @@ const MintNFT: React.FC = () => {
     hash: false,
     mint: false
   });
-  const [pendingTxId, setPendingTxId] = useState<string | null>(null);
-  const [pendingNFT, setPendingNFT] = useState<any>(null);
-  const [checkInterval, setCheckInterval] = useState<NodeJS.Timeout | null>(null);
 
   // ========== EFFECTS ==========
   useEffect(() => {
     checkQuantumService();
     setupEthContract();
-    
-    // Clean up interval on unmount
-    return () => {
-      if (checkInterval) {
-        clearInterval(checkInterval);
-      }
-    };
   }, []);
 
   useEffect(() => {
@@ -216,124 +206,6 @@ const MintNFT: React.FC = () => {
     }
   }, [algoAccount]);
 
-  // ========== PENDING TRANSACTION CHECKER ==========
-  useEffect(() => {
-    if (pendingTxId && selectedChain === 'algorand') {
-      console.log(`🔍 Starting to monitor transaction: ${pendingTxId}`);
-      
-      // Clear any existing interval
-      if (checkInterval) {
-        clearInterval(checkInterval);
-      }
-      
-      // Set up new interval to check every 3 seconds
-      const interval = setInterval(async () => {
-        try {
-          console.log(`🔄 Checking transaction: ${pendingTxId}`);
-          
-          // Try multiple methods to check status
-          
-          // Method 1: Use checkTransactionStatus
-          const status = await algorandService.checkTransactionStatus(pendingTxId);
-          console.log("Status check result:", status);
-          
-          if (status?.confirmed) {
-            console.log("✅ Transaction confirmed via checkTransactionStatus!");
-            
-            // Get asset ID
-            let assetId = status.assetId || "N/A";
-            
-            // If still N/A, try to get from indexer
-            if (assetId === "N/A") {
-              try {
-                const fetchedAssetId = await algorandService.getAssetIdFromTransaction(pendingTxId);
-                if (fetchedAssetId) {
-                  assetId = fetchedAssetId;
-                  console.log("✅ Asset ID fetched from indexer:", assetId);
-                }
-              } catch (e) {
-                console.error("Failed to fetch asset ID:", e);
-              }
-            }
-            
-            // Update the UI
-            if (pendingNFT) {
-              setMintedNFT({
-                ...pendingNFT,
-                tokenId: assetId,
-                isVerified: true,
-                status: 'completed',
-                explorerUrl: assetId !== "N/A" 
-                  ? `https://lora.algokit.io/testnet/asset/${assetId}`
-                  : `https://lora.algokit.io/testnet/transaction/${pendingTxId}`
-              });
-            }
-            
-            setStatus({ 
-              type: "success", 
-              message: assetId !== "N/A" 
-                ? `🎉 NFT minted successfully! Asset ID: ${assetId}` 
-                : "🎉 NFT minted successfully! Check explorer for details."
-            });
-            
-            // Clear monitoring state
-            setPendingTxId(null);
-            setPendingNFT(null);
-            clearInterval(interval);
-            setCheckInterval(null);
-            
-            // Refresh balance
-            setTimeout(fetchAlgoBalance, 2000);
-            return;
-          }
-          
-          // Method 2: Try direct indexer check
-          const indexerStatus = await algorandService.checkTransactionStatusViaIndexer(pendingTxId);
-          if (indexerStatus && indexerStatus.confirmed === true) {
-            console.log("✅ Transaction confirmed via indexer!");
-            
-            let assetId = indexerStatus.assetId || "N/A";
-            
-            if (pendingNFT) {
-              setMintedNFT({
-                ...pendingNFT,
-                tokenId: assetId,
-                isVerified: true,
-                status: 'completed',
-                explorerUrl: assetId !== "N/A" 
-                  ? `https://lora.algokit.io/testnet/asset/${assetId}`
-                  : `https://lora.algokit.io/testnet/transaction/${pendingTxId}`
-              });
-            }
-            
-            setStatus({ type: "success", message: `🎉 NFT minted successfully! Asset ID: ${assetId}` });
-            
-            setPendingTxId(null);
-            setPendingNFT(null);
-            clearInterval(interval);
-            setCheckInterval(null);
-            setTimeout(fetchAlgoBalance, 2000);
-            return;
-          }
-          
-          console.log("⏳ Still checking for confirmation...");
-          
-        } catch (error) {
-          console.error("Error checking transaction:", error);
-        }
-      }, 5000); // Check every 5 seconds
-      
-      setCheckInterval(interval);
-    }
-    
-    return () => {
-      if (checkInterval) {
-        clearInterval(checkInterval);
-      }
-    };
-  }, [pendingTxId, selectedChain, pendingNFT]);
-
-  
   // ========== ETHEREUM FUNCTIONS ==========
   const setupEthContract = async () => {
     if (!window.ethereum || !ethAccount) return;
@@ -607,6 +479,7 @@ const MintNFT: React.FC = () => {
 
       setStatus({ type: 'success', message: '🎉 Ethereum NFT minted successfully!' });
 
+      // Reset form
       setForm({ name: '', description: '', image: null, quantumHash: '' });
       setPreview('');
       if (preview) URL.revokeObjectURL(preview);
@@ -635,7 +508,7 @@ const MintNFT: React.FC = () => {
     }
   };
 
-  // ========== ALGORAND MINTING (FIXED - NO PENDING) ==========
+  // ========== ALGORAND MINTING (UPDATED - DIRECT CONFIRMATION + LORA) ==========
   const mintAlgorandNFT = async () => {
     if (!algoAccount) {
       setStatus({ type: "error", message: "Connect Algorand wallet first" });
@@ -666,29 +539,105 @@ const MintNFT: React.FC = () => {
       const response = await algorandService.sendTransaction(signedTxn);
       const txId = response.txId;
 
-      console.log("✅ Transaction sent with ID:", txId);
+      setStatus({ type: "info", message: "Waiting for confirmation..." });
 
-      setStatus({ 
-        type: "success", 
-        message: `Transaction submitted! ID: ${txId}. The page will update when confirmed.` 
-      });
+      // Wait for confirmation with retries
+      let confirmed = false;
+      let assetId = null;
+      let retries = 0;
+      const maxRetries = 10;
 
-      // Set up monitoring for confirmation
-      setPendingTxId(txId);
-      
-      // Don't set a pending NFT - we'll wait for confirmation to show it
-      // Instead, just store the data to use when confirmed
-      setPendingNFT({
-        name: form.name,
-        description: form.description,
-        quantumHash: form.quantumHash,
-        creator: algoAccount,
-        quantumEnhanced: quantumStatus === 'online',
-        network: 'Algorand',
-        transactionHash: txId
-      });
+      while (!confirmed && retries < maxRetries) {
+        await new Promise(resolve => setTimeout(resolve, 2000)); // Wait 2 seconds between checks
+        
+        try {
+          const status = await algorandService.checkTransactionStatus(txId);
+          
+          if (status && status.confirmed) {
+            confirmed = true;
+            
+            // Try to get asset ID
+            try {
+              const fetchedAssetId = await algorandService.getAssetIdFromTransaction(txId);
+              if (fetchedAssetId) {
+                assetId = fetchedAssetId;
+              } else {
+                // Try one more time with a slight delay
+                await new Promise(resolve => setTimeout(resolve, 1000));
+                const retryAssetId = await algorandService.getAssetIdFromTransaction(txId);
+                if (retryAssetId) assetId = retryAssetId;
+              }
+            } catch (e) {
+              console.error("Error fetching asset ID:", e);
+            }
+          }
+        } catch (error) {
+          console.log("Checking transaction status...");
+        }
+        
+        retries++;
+      }
 
-      // Don't set mintedNFT yet - wait for confirmation
+      if (confirmed) {
+        // Create Lora explorer URL
+        const explorerUrl = assetId 
+          ? `https://lora.algokit.io/testnet/asset/${assetId}`  // Asset view on Lora
+          : `https://lora.algokit.io/testnet/transaction/${txId}`; // Transaction view on Lora
+
+        setMintedNFT({
+          name: form.name,
+          description: form.description,
+          quantumHash: form.quantumHash,
+          tokenId: assetId || "N/A",
+          creator: algoAccount,
+          quantumEnhanced: quantumStatus === 'online',
+          network: 'Algorand',
+          transactionHash: txId,
+          explorerUrl: explorerUrl,
+          status: 'completed',
+          isVerified: true
+        });
+
+        setStatus({ 
+          type: "success", 
+          message: assetId 
+            ? `🎉 NFT minted successfully! Asset ID: ${assetId}` 
+            : "🎉 NFT minted successfully! Check explorer for details."
+        });
+
+        // Reset form
+        setForm({ name: '', description: '', image: null, quantumHash: '' });
+        setPreview('');
+        if (preview) URL.revokeObjectURL(preview);
+
+        // Refresh balance
+        fetchAlgoBalance();
+      } else {
+        // If confirmation times out, still show success but with tx ID
+        setMintedNFT({
+          name: form.name,
+          description: form.description,
+          quantumHash: form.quantumHash,
+          tokenId: "Pending",
+          creator: algoAccount,
+          quantumEnhanced: quantumStatus === 'online',
+          network: 'Algorand',
+          transactionHash: txId,
+          explorerUrl: `https://lora.algokit.io/testnet/transaction/${txId}`,
+          status: 'pending',
+          isVerified: false
+        });
+
+        setStatus({ 
+          type: "success", 
+          message: `✅ Transaction submitted! Check Lora explorer for confirmation.`
+        });
+
+        // Reset form
+        setForm({ name: '', description: '', image: null, quantumHash: '' });
+        setPreview('');
+        if (preview) URL.revokeObjectURL(preview);
+      }
 
     } catch (error: any) {
       console.error("Algorand minting error:", error);
@@ -733,58 +682,6 @@ const MintNFT: React.FC = () => {
       setupEthContract();
     } else {
       setStatus({ type: 'error', message: 'Invalid Ethereum address' });
-    }
-  };
-
-  const checkTransactionNow = async () => {
-    if (pendingTxId) {
-      setStatus({ type: "info", message: "Checking transaction status..." });
-      
-      try {
-        // Try multiple methods
-        const status = await algorandService.checkTransactionStatus(pendingTxId);
-        
-        if (status && status.confirmed) {
-          let assetId = status.assetId || "N/A";
-          
-          if (assetId === "N/A") {
-            const fetchedAssetId = await algorandService.getAssetIdFromTransaction(pendingTxId);
-            if (fetchedAssetId) assetId = fetchedAssetId;
-          }
-          
-          if (pendingNFT) {
-            setMintedNFT({
-              ...pendingNFT,
-              tokenId: assetId,
-              isVerified: true,
-              status: 'completed',
-              explorerUrl: assetId !== "N/A" 
-                ? `https://lora.algokit.io/testnet/asset/${assetId}`
-                : `https://lora.algokit.io/testnet/transaction/${pendingTxId}`
-            });
-          }
-          
-          setStatus({ type: "success", message: `✅ NFT minted successfully! Asset ID: ${assetId}` });
-          setPendingTxId(null);
-          setPendingNFT(null);
-          
-          if (checkInterval) {
-            clearInterval(checkInterval);
-            setCheckInterval(null);
-          }
-
-          // Reset form
-          setForm({ name: '', description: '', image: null, quantumHash: '' });
-          setPreview('');
-          if (preview) URL.revokeObjectURL(preview);
-          
-        } else {
-          setStatus({ type: "info", message: "Transaction still processing. Will continue checking." });
-        }
-      } catch (error) {
-        console.error("Manual check error:", error);
-        setStatus({ type: "error", message: "Error checking transaction status." });
-      }
     }
   };
 
@@ -948,29 +845,6 @@ const MintNFT: React.FC = () => {
               message={status.message}
               onClose={() => setStatus(null)}
             />
-          </div>
-        )}
-
-        {/* Transaction Monitoring Status - Only shown when transaction is being processed */}
-        {pendingTxId && !mintedNFT && (
-          <div className="mb-4 p-4 bg-blue-500/10 border border-blue-500/30 rounded-lg">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <div className="animate-spin h-4 w-4 border-2 border-blue-400 border-t-transparent rounded-full"></div>
-                <span className="text-blue-400">
-                  Processing your transaction - checking every 5 seconds
-                </span>
-              </div>
-              <button
-                onClick={checkTransactionNow}
-                className="text-xs bg-blue-600 hover:bg-blue-700 text-white px-3 py-1 rounded-lg"
-              >
-                Check Now
-              </button>
-            </div>
-            <p className="text-xs text-gray-400 mt-2">
-              Transaction ID: {pendingTxId.substring(0, 20)}...
-            </p>
           </div>
         )}
 
@@ -1178,7 +1052,31 @@ const MintNFT: React.FC = () => {
               </div>
             </Card>
 
-            {/* Minted NFT Display - Only shown when minted successfully */}
+            {/* Lora Explorer Info */}
+            {selectedChain === "algorand" && (
+              <Card title="🔍 Lora Explorer">
+                <div className="space-y-3">
+                  <p className="text-sm text-gray-400">
+                    View your minted NFTs and transactions on Lora Explorer:
+                  </p>
+                  <a
+                    href="https://lora.algokit.io/testnet"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="block text-center bg-gradient-to-r from-green-600 to-emerald-500 text-white py-2 rounded-lg hover:opacity-90 transition-all"
+                  >
+                    Open Lora Explorer
+                  </a>
+                  {algoAccount && (
+                    <p className="text-xs text-gray-500 text-center mt-2">
+                      Your address: {formatAddress(algoAccount, 6, 6)}
+                    </p>
+                  )}
+                </div>
+              </Card>
+            )}
+
+            {/* Minted NFT Display */}
             {mintedNFT && (
               <Card title={`🎉 Minted on ${mintedNFT.network}!`}>
                 <div className="space-y-4">
@@ -1214,7 +1112,11 @@ const MintNFT: React.FC = () => {
                       rel="noopener noreferrer"
                       className="block text-center bg-blue-600 hover:bg-blue-700 text-white py-2 rounded-lg transition-all"
                     >
-                      View on Explorer
+                      {mintedNFT.network === 'Algorand' 
+                        ? (mintedNFT.tokenId !== "N/A" && mintedNFT.tokenId !== "Pending" 
+                          ? 'View Asset on Lora' 
+                          : 'View Transaction on Lora')
+                        : 'View on Etherscan'}
                     </a>
                   )}
 
@@ -1227,8 +1129,6 @@ const MintNFT: React.FC = () => {
                 </div>
               </Card>
             )}
-
-            {/* No pending state - either we show minted NFT or nothing */}
           </div>
         </div>
       </div>
